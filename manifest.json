@@ -1,0 +1,29 @@
+{
+	"manifest_version": 3,
+	"name": "YouTube Video Summarizer",
+	"version": "1.0",
+	"description": "Extract English subtitles from YouTube videos and summarize them using AI",
+	"permissions": ["activeTab", "storage"],
+	"host_permissions": ["https://www.youtube.com/*", "https://youtube-summary-ashy.vercel.app/*"],
+	"content_scripts": [
+		{
+			"matches": ["https://www.youtube.com/*"],
+			"js": ["content.js"],
+			"css": ["styles.css"],
+			"run_at": "document_start"
+		}
+	],
+	"background": {
+		"service_worker": "background.js"
+	},
+	"action": {
+		"default_popup": "popup.html",
+		"default_title": "YouTube Video Summarizer"
+	},
+	"web_accessible_resources": [
+		{
+			"resources": ["styles.css"],
+			"matches": ["https://www.youtube.com/*"]
+		}
+	]
+}
