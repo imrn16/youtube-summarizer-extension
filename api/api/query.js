@@ -2,17 +2,21 @@
 // Stores the API key in env and proxies to OpenRouter. No CORS restrictions by default.
 
 export default async function handler(request, response) {
+	const startMs = Date.now();
+	let correlationId = (request.headers["x-correlation-id"] || "").toString();
+	let bodyMeta;
 	try {
 		if (request.method !== "POST") {
 			return response.status(405).json({ error: "Method not allowed" });
 		}
 
-		const { prompt } = await getJson(request);
+		const { prompt, meta } = await getJson(request);
+		bodyMeta = meta;
 		if (!prompt || typeof prompt !== "string") {
 			return response.status(400).json({ error: "Missing or invalid prompt" });
 		}
 
-		if (prompt.length > 60000) {
+		if (prompt.length > 55000) {
 			return response.status(413).json({ error: "Prompt too large" });
 		}
 
@@ -23,13 +27,15 @@ export default async function handler(request, response) {
 
 		const model = process.env.OPENROUTER_MODEL || "google/gemini-2.0-flash-exp:free";
 
-		const openrouterRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+		if (!correlationId && meta?.runId) correlationId = String(meta.runId);
+		const openrouterRes = await fetchWithRetries("https://openrouter.ai/api/v1/chat/completions", {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
 				Authorization: `Bearer ${apiKey}`,
 				"HTTP-Referer": "https://www.youtube.com",
 				"X-Title": "YouTube Video Summarizer",
+				"X-Correlation-Id": correlationId,
 			},
 			body: JSON.stringify({
 				model,
@@ -47,19 +53,60 @@ export default async function handler(request, response) {
 
 		if (!openrouterRes.ok) {
 			const err = await safeJson(openrouterRes);
-			return response.status(openrouterRes.status).json({ error: err?.error?.message || "Upstream error" });
+			const retryAfter = openrouterRes.headers?.get?.("retry-after");
+			return response.status(openrouterRes.status).json({
+				error: err?.error?.message || "Upstream error",
+				upstreamStatus: openrouterRes.status,
+				retryAfter: retryAfter || null,
+				correlationId,
+				durationMs: Date.now() - startMs,
+			});
 		}
 
-		const data = await openrouterRes.json();
+		const data = await safeJson(openrouterRes);
 		const answer = data?.choices?.[0]?.message?.content;
 		if (!answer) {
-			return response.status(502).json({ error: "Invalid response from model" });
+			return response.status(502).json({ error: "Invalid response from model", correlationId, durationMs: Date.now() - startMs });
 		}
 
-		return response.status(200).json({ answer });
+		return response.status(200).json({ answer, correlationId, durationMs: Date.now() - startMs });
 	} catch (e) {
-		return response.status(500).json({ error: e?.message || "Unexpected error" });
+		const fallbackCorrelation = correlationId || (typeof bodyMeta?.runId === "string" ? bodyMeta.runId : undefined);
+		return response.status(500).json({ error: e?.message || "Unexpected error", correlationId: fallbackCorrelation, durationMs: Date.now() - startMs });
 	}
+}
+
+async function fetchWithRetries(url, options, { maxRetries = 4, baseBackoffMs = 500 } = {}) {
+	let attempt = 0;
+	let lastError;
+	while (attempt <= maxRetries) {
+		try {
+			const res = await fetch(url, options);
+			if (res.ok) return res;
+			const status = res.status;
+			if (status === 429 || (status >= 500 && status <= 599)) {
+				// Respect Retry-After
+				const retryAfterHeader = res.headers?.get?.("retry-after");
+				let delayMs = 0;
+				if (retryAfterHeader) {
+					const ra = parseInt(retryAfterHeader, 10);
+					if (!Number.isNaN(ra)) delayMs = ra * 1000;
+				}
+				if (delayMs === 0) delayMs = Math.min(15000, baseBackoffMs * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
+				await new Promise((r) => setTimeout(r, delayMs));
+				attempt += 1;
+				continue;
+			}
+			// Non-retryable
+			return res;
+		} catch (e) {
+			lastError = e;
+			const delayMs = Math.min(15000, baseBackoffMs * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
+			await new Promise((r) => setTimeout(r, delayMs));
+			attempt += 1;
+		}
+	}
+	throw lastError || new Error("Request failed after retries");
 }
 
 async function getJson(req) {

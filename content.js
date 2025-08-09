@@ -30,7 +30,150 @@ class YouTubeSummarizer {
 		this.initializationAttempts = 0; // Track initialization attempts
 		this.maxInitializationAttempts = 3; // Maximum initialization attempts
 		this.initializationComplete = false; // Flag to track if initialization is complete
+		this.generationProgress = null; // { current, total } progress while chunk-uploading
 		this.init();
+	}
+
+	// Build a timestamp reference list for specific subtitle indices
+	buildTimestampReferenceForIndices(indices, max = 25) {
+		try {
+			const items = [];
+			for (let k = 0; k < indices.length && items.length < max; k++) {
+				const idx = indices[k];
+				const timing = this.subtitleTimings[idx];
+				if (!timing) continue;
+				const formatted = this.formatTimestamp(timing.start);
+				const content = (this.subtitles[idx] || "").trim();
+				if (content) items.push(`• [${formatted}] - "${content}"`);
+			}
+			return items.join("\n");
+		} catch (e) {
+			return "";
+		}
+	}
+
+	// Build a global timestamp reference from key timestamps
+	buildTimestampReferenceFromKeyTimestamps(keyTimestamps = []) {
+		try {
+			if (!Array.isArray(keyTimestamps)) return "";
+			return keyTimestamps
+				.slice(0, 30)
+				.map((ts) => `• [${ts.formatted}] - "${(ts.content || "").trim()}"`)
+				.join("\n");
+		} catch (e) {
+			return "";
+		}
+	}
+
+	// Chunk subtitles with the user's question to maximize answer accuracy
+	async queryInChunks(query, videoTitle, subtitlesText, keyTimestamps, meta) {
+		const CHUNK_SIZE = 30000; // match summary path to minimize requests
+		const INTER_CHUNK_DELAY_MS = 800;
+		const MAX_RETRIES_PER_CHUNK = 4;
+		const chunks = [];
+		for (let i = 0; i < subtitlesText.length; i += CHUNK_SIZE) {
+			chunks.push(subtitlesText.slice(i, i + CHUNK_SIZE));
+		}
+
+		// Update the pending query section with progress
+		this.updateQueryProgress(0, chunks.length);
+
+		const perChunkAnswers = [];
+		for (let i = 0; i < chunks.length; i++) {
+			const tsRef = this.buildTimestampReferenceForIndices(chunks[i].indices || [], 25);
+			const prompt = `You are answering a question about the YouTube video titled "${videoTitle}".
+
+Question: ${query}
+
+Here is CHUNK (${i + 1}/${chunks.length}) of the video's subtitles:
+
+${chunks[i].text || chunks[i]}
+
+Available timestamps from this chunk (use only these when referencing moments):
+${tsRef}
+
+Task: Provide a concise answer based ONLY on this chunk as a bullet list. For EVERY bullet point, you MUST:
+- Start the bullet with exactly one timestamp in [MM:SS] or [HH:MM:SS] format chosen from the list above (the most relevant moment).
+- If no timestamp in the list is relevant for that bullet, use [N/A] and briefly explain why.
+- Do not invent timestamps. Use only the timestamps listed above.`;
+
+			let attempt = 0;
+			let success = false;
+			let lastError = null;
+			while (attempt < MAX_RETRIES_PER_CHUNK && !success) {
+				try {
+					const res = await chrome.runtime.sendMessage({
+						action: "query",
+						customPrompt: prompt,
+						meta: { ...meta, phase: "q-chunk", index: i + 1, total: chunks.length },
+					});
+					if (!res || !res.success) throw new Error(res?.error || "Failed to get chunk answer");
+					perChunkAnswers.push(res.answer);
+					success = true;
+				} catch (e) {
+					lastError = e;
+					const backoffMs = Math.min(10000, 1000 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
+					await new Promise((r) => setTimeout(r, backoffMs));
+					attempt += 1;
+				}
+			}
+			if (!success) throw new Error(lastError?.message || "Failed to get chunk answer after retries");
+			// Update progress after each chunk
+			this.updateQueryProgress(i + 1, chunks.length);
+			if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
+		}
+
+		// Combine all per-chunk answers into a single answer
+		const globalTsRef = this.buildTimestampReferenceFromKeyTimestamps(keyTimestamps);
+		const combinePrompt = `You are given ${perChunkAnswers.length} partial answers to the question "${query}" about the video "${videoTitle}".
+
+Combine them into one high-quality answer AS A BULLET LIST (you may group bullets under short headers if needed). Remove contradictions and duplicates, prefer precise statements with timestamps, and clearly state if some information is not available from the provided content. Use only the timestamps listed below when referencing moments.
+
+Available timestamps from the video:
+${globalTsRef}
+
+Partial answers:
+
+${perChunkAnswers
+	.map(
+		(a, idx) => `Part ${idx + 1}:
+${a}`
+	)
+	.join("\n\n")}
+
+Final formatting rules for your output:
+- Output bullets only (you may include short headers, but make the content bullets).
+- EVERY bullet point MUST start with one timestamp in [MM:SS] or [HH:MM:SS] format pulled from the available timestamps above. Choose the best matching moment.
+- If no timestamp is applicable, use [N/A] and briefly explain why.
+- Do not invent timestamps. Use only the timestamps listed above.`;
+
+		let combineAttempt = 0;
+		while (combineAttempt < 4) {
+			try {
+				const final = await chrome.runtime.sendMessage({ action: "query", customPrompt: combinePrompt, meta: { ...meta, phase: "q-combine" } });
+				if (!final || !final.success) throw new Error(final?.error || "Failed to combine answers");
+				return final.answer;
+			} catch (e) {
+				const backoffMs = Math.min(12000, 1000 * Math.pow(2, combineAttempt)) + Math.floor(Math.random() * 250);
+				await new Promise((r) => setTimeout(r, backoffMs));
+				combineAttempt += 1;
+			}
+		}
+		throw new Error("Failed to combine answers after retries");
+	}
+
+	// Reflect per-question chunking progress in the pending UI row
+	updateQueryProgress(current, total) {
+		try {
+			const summaryContent = document.getElementById("summary-content");
+			if (!summaryContent) return;
+			const pending = summaryContent.querySelector(".query-section:last-child .query-pending p");
+			if (pending) {
+				pending.textContent = `Getting answer... (${Math.min(current, total)}/${total})`;
+			}
+		} catch (e) {
+			console.error("Error updating query progress:", e);
+		}
 	}
 
 	init() {
@@ -1416,9 +1559,14 @@ class YouTubeSummarizer {
 
 	formatTimestamp(seconds) {
 		try {
-			const minutes = Math.floor(seconds / 60);
-			const remainingSeconds = Math.floor(seconds % 60);
-			return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+			const totalSeconds = Math.max(0, Math.floor(seconds));
+			const hours = Math.floor(totalSeconds / 3600);
+			const minutes = Math.floor((totalSeconds % 3600) / 60);
+			const secs = totalSeconds % 60;
+			if (hours > 0) {
+				return `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+			}
+			return `${minutes}:${secs.toString().padStart(2, "0")}`;
 		} catch (error) {
 			console.error("Error formatting timestamp:", error);
 			return "0:00";
@@ -1745,23 +1893,17 @@ class YouTubeSummarizer {
 			// Add question immediately to the view
 			this.addQueryToView(query, null, true);
 
-			// Send query to background script
-			const response = await chrome.runtime.sendMessage({
-				action: "query",
-				query: query,
-				videoTitle: this.getVideoTitle(),
-				summary: this.summary,
-				subtitles: this.subtitles.join(" "),
-				keyTimestamps: this.extractKeyTimestamps(),
-			});
+			// Build meta and run chunked question flow over the full captions
+			const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			const videoTitle = this.getVideoTitle();
+			const keyTimestamps = this.extractKeyTimestamps();
+			const subtitlesText = this.subtitles.join(" ");
+			const meta = { runId, videoTitle, pageUrl: location.href };
 
-			if (response.success) {
-				// Update the view with the answer
-				this.addQueryToView(query, response.answer, false);
-			} else {
-				// Update the view with error
-				this.addQueryToView(query, `❌ ${response.error || "Failed to get answer. Please try again."}`, false, true);
-			}
+			const finalAnswer = await this.queryInChunks(query, videoTitle, subtitlesText, keyTimestamps, meta);
+
+			// Update the view with the combined answer
+			this.addQueryToView(query, finalAnswer, false);
 
 			// Reset button state
 			submitBtn.disabled = false;
@@ -1805,6 +1947,45 @@ class YouTubeSummarizer {
 		} finally {
 			// Always reset the submitting flag
 			this.querySubmitting = false;
+		}
+	}
+
+	// Build a compact, relevant excerpt of subtitles based on the user's query
+	buildRelevantSubtitleContext(query, maxChars = 1800) {
+		try {
+			if (!query || !this.subtitles || this.subtitles.length === 0) return "";
+			const q = query.toLowerCase();
+			const tokens = Array.from(new Set(q.split(/[^a-z0-9]+/i).filter((t) => t.length >= 4)));
+			if (tokens.length === 0) return "";
+			const scored = [];
+			for (let i = 0; i < this.subtitles.length; i++) {
+				const text = (this.subtitles[i] || "").toLowerCase();
+				let score = 0;
+				for (const t of tokens) {
+					if (text.includes(t)) score++;
+				}
+				if (score > 0) scored.push({ i, score });
+			}
+			// Sort by score descending, take top slices
+			scored.sort((a, b) => b.score - a.score);
+			const take = Math.min(25, scored.length);
+			let result = "";
+			for (let k = 0; k < take && result.length < maxChars; k++) {
+				const idx = scored[k].i;
+				const start = Math.max(0, idx - 1);
+				const end = Math.min(this.subtitles.length - 1, idx + 1);
+				for (let j = start; j <= end; j++) {
+					const timing = this.subtitleTimings[j];
+					const ts = timing ? `[${this.formatTimestamp(timing.start)}]` : "";
+					const line = `${ts} ${this.subtitles[j]}`.trim();
+					if (result.length + line.length + 1 > maxChars) break;
+					result += (result ? "\n" : "") + line;
+				}
+			}
+			return result;
+		} catch (e) {
+			console.error("Error building relevant subtitle context:", e);
+			return "";
 		}
 	}
 
@@ -1915,6 +2096,9 @@ class YouTubeSummarizer {
 
 			// Convert timestamps to clickable elements
 			formatted = this.convertTimestampsToClickable(formatted);
+
+			// Remove [N/A] tags if the model used them for bullets with no applicable timestamp
+			formatted = formatted.replace(/\[N\/A\]\s*/gi, "");
 
 			// Sanitize to avoid XSS
 			formatted = this.sanitizeHTML(formatted);
@@ -2267,18 +2451,29 @@ class YouTubeSummarizer {
 				}
 			}
 
+			// Reset any previous progress indicator
+			this.generationProgress = null;
 			this.isProcessing = true;
 			this.updateGenerateButton(true);
 
 			const subtitlesText = this.subtitles.join(" ");
 			const videoTitle = this.getVideoTitle();
 			const keyTimestamps = this.extractKeyTimestamps();
+			// Add meta for diagnostics and correlation
+			const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			const meta = {
+				runId,
+				videoTitle,
+				totalSubtitles: this.subtitles.length,
+				totalTimings: this.subtitleTimings.length,
+				pageUrl: location.href,
+			};
 
 			console.log(`Sending summary request with ${this.subtitles.length} subtitles and title: ${videoTitle}`);
 			console.log("Key timestamps available:", keyTimestamps);
 
 			// Chunk if too large
-			const MAX_CHARS = 20000;
+			const MAX_CHARS = 60000;
 			if (subtitlesText.length > MAX_CHARS) {
 				console.log("Subtitles are large, using chunked summarization...");
 				try {
@@ -2302,6 +2497,7 @@ class YouTubeSummarizer {
 						subtitles: subtitlesText,
 						videoTitle,
 						keyTimestamps,
+						meta,
 					});
 					if (response && response.success) {
 						this.summary = response.summary;
@@ -2328,36 +2524,140 @@ class YouTubeSummarizer {
 			this.showError("Failed to generate summary. Please try again later.");
 		} finally {
 			this.isProcessing = false;
+			// Ensure progress is cleared after completion or failure
+			this.generationProgress = null;
 			this.updateGenerateButton(false);
 		}
 	}
 
 	// Split subtitles into chunks, summarize each, then combine
 	async summarizeInChunks(subtitlesText, videoTitle, keyTimestamps) {
-		const CHUNK_SIZE = 7000; // characters per chunk
+		const CHUNK_SIZE = 30000; // increase per-chunk payload to reduce number of round trips
+		const INTER_CHUNK_DELAY_MS = 800; // shorter delay between chunk requests to speed up
+		const MAX_RETRIES_PER_CHUNK = 4;
+		// Build chunks aligned to subtitle boundaries to preserve timestamps
 		const chunks = [];
-		for (let i = 0; i < subtitlesText.length; i += CHUNK_SIZE) {
-			chunks.push(subtitlesText.slice(i, i + CHUNK_SIZE));
+		let buffer = "";
+		let currentIndices = [];
+		for (let i = 0; i < this.subtitles.length; i++) {
+			const add = (this.subtitles[i] || "") + " ";
+			if (buffer.length + add.length > CHUNK_SIZE && currentIndices.length > 0) {
+				chunks.push({ text: buffer.trim(), indices: currentIndices.slice() });
+				buffer = "";
+				currentIndices = [];
+			}
+			buffer += add;
+			currentIndices.push(i);
+		}
+		if (currentIndices.length > 0) {
+			chunks.push({ text: buffer.trim(), indices: currentIndices.slice() });
 		}
 		const chunkSummaries = [];
+		// Initialize progress; total is number of chunks
+		this.generationProgress = { current: 0, total: chunks.length };
+		this.updateGenerateButton(true);
 		for (let i = 0; i < chunks.length; i++) {
+			// Update progress before sending each chunk
+			this.generationProgress = { current: i + 1, total: chunks.length };
+			this.updateGenerateButton(true);
+			const timestampReference = this.buildTimestampReferenceForIndices(chunks[i].indices, 20);
 			const prompt = `You will receive a chunk (${i + 1}/${
 				chunks.length
-			}) of subtitles for the YouTube video titled "${videoTitle}". Summarize ONLY this chunk with clear sections (##) and keep it concise.\n\nChunk content:\n${
-				chunks[i]
-			}`;
-			const res = await chrome.runtime.sendMessage({ action: "summarize", customPrompt: prompt });
-			if (!res || !res.success) throw new Error(res?.error || "Failed to summarize chunk");
-			chunkSummaries.push(res.summary);
+			}) of subtitles for the YouTube video titled "${videoTitle}". Summarize ONLY this chunk with clear sections (##) and keep it concise.
+
+Chunk content:
+${chunks[i].text}
+
+Available timestamps from this chunk (use only these when referencing moments):
+${timestampReference}
+
+IMPORTANT: Only use timestamps listed above when referencing specific moments. Do not make up timestamps.`;
+			let attempt = 0;
+			let success = false;
+			let lastError = null;
+			while (attempt < MAX_RETRIES_PER_CHUNK && !success) {
+				try {
+					const res = await chrome.runtime.sendMessage({
+						action: "summarize",
+						customPrompt: prompt,
+						meta: { ...meta, phase: "chunk", index: i + 1, total: chunks.length },
+					});
+					if (!res || !res.success) throw new Error(res?.error || "Failed to summarize chunk");
+					chunkSummaries.push(res.summary);
+					success = true;
+				} catch (e) {
+					lastError = e;
+					const backoffMs = Math.min(10000, 1000 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
+					await new Promise((r) => setTimeout(r, backoffMs));
+					attempt += 1;
+				}
+			}
+			if (!success) throw new Error(lastError?.message || "Failed to summarize chunk after retries");
+			// Small delay between chunks to avoid rate limits
+			if (i < chunks.length - 1) {
+				await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
+			}
 		}
-		const combinePrompt = `You are given ${
-			chunkSummaries.length
-		} chunk summaries for the YouTube video "${videoTitle}". Merge them into a single, non-redundant summary with the structure:\n\n## Main Topic\n## Key Points\n## Important Insights\n## Notable Details\n## Overall Message\n\nBe concise and avoid duplication. Here are the chunk summaries:\n\n${chunkSummaries
-			.map((s, idx) => `Chunk ${idx + 1}:\n${s}`)
-			.join("\n\n")}`;
-		const final = await chrome.runtime.sendMessage({ action: "summarize", customPrompt: combinePrompt });
-		if (!final || !final.success) throw new Error(final?.error || "Failed to combine summaries");
-		return final.summary;
+
+		// Combine hierarchically in batches to keep prompt sizes small
+		const batchSize = 5; // combine more parts per batch to reduce combine rounds
+		let currentLevel = chunkSummaries.slice();
+		const combineOneBatch = async (batch, title) => {
+			const globalTsRef = this.buildTimestampReferenceFromKeyTimestamps(keyTimestamps);
+			const combinePrompt = `You are given ${
+				batch.length
+			} partial summaries for the YouTube video titled "${title}". Merge them into one concise, non-redundant summary with the structure:
+
+## Main Topic
+## Key Points
+## Important Insights
+## Notable Details
+## Overall Message
+
+Avoid duplication. Use only the timestamps listed below when referencing specific moments.
+
+Available timestamps from the video:
+${globalTsRef}
+
+Partial summaries:
+
+${batch
+	.map(
+		(s, idx) => `Part ${idx + 1}:
+${s}`
+	)
+	.join("\n\n")}`;
+			let attempt = 0;
+			while (attempt < 4) {
+				try {
+					const res = await chrome.runtime.sendMessage({ action: "summarize", customPrompt: combinePrompt, meta: { ...meta, phase: "combine" } });
+					if (!res || !res.success) throw new Error(res?.error || "Failed to combine batch");
+					return res.summary;
+				} catch (e) {
+					const backoffMs = Math.min(12000, 1000 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
+					await new Promise((r) => setTimeout(r, backoffMs));
+					attempt += 1;
+				}
+			}
+			throw new Error("Failed to combine batch after retries");
+		};
+
+		while (currentLevel.length > 1) {
+			const nextLevel = [];
+			for (let i = 0; i < currentLevel.length; i += batchSize) {
+				const batch = currentLevel.slice(i, i + batchSize);
+				const combined = await combineOneBatch(batch, videoTitle);
+				nextLevel.push(combined);
+				// Delay between batch combines
+				await new Promise((r) => setTimeout(r, 700));
+			}
+			currentLevel = nextLevel;
+		}
+
+		// Clear progress after combine
+		this.generationProgress = null;
+		this.updateGenerateButton(true);
+		return currentLevel[0];
 	}
 
 	// Simple debounce helper
@@ -2375,9 +2675,15 @@ class YouTubeSummarizer {
 			if (summarizeBtn) {
 				if (isLoading) {
 					summarizeBtn.disabled = true;
+					// If we have chunk progress, show it as Generating... (x/y)
+					let progressSuffix = "";
+					if (this.generationProgress && this.generationProgress.total > 0) {
+						const { current, total } = this.generationProgress;
+						progressSuffix = ` (${Math.min(current, total)}/${total})`;
+					}
 					summarizeBtn.innerHTML = `
 						<span class="btn-spinner"></span>
-						<span>Generating...</span>
+						<span>Generating...${progressSuffix}</span>
 					`;
 					summarizeBtn.classList.add("loading");
 				} else {
@@ -2488,6 +2794,10 @@ class YouTubeSummarizer {
 
 			// Sanitize to avoid XSS
 			formatted = this.sanitizeHTML(formatted);
+
+			// Hide explicit markers about missing timestamps or unavailable mapping
+			formatted = formatted.replace(/\[N\/A\]\s*/gi, "");
+			formatted = formatted.replace(/\(\s*Not mentioned in the available timestamps\.?\s*\)/gi, "");
 
 			// Setup click listeners for the new timestamp buttons
 			setTimeout(() => {

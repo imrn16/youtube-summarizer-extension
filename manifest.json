@@ -3,8 +3,8 @@
 	"name": "YouTube Video Summarizer",
 	"version": "1.0",
 	"description": "Extract English subtitles from YouTube videos and summarize them using AI",
-	"permissions": ["activeTab", "storage"],
-	"host_permissions": ["https://www.youtube.com/*", "https://youtube-summary-ashy.vercel.app/*"],
+	"permissions": ["storage"],
+	"host_permissions": ["https://youtube-summary-ashy.vercel.app/*"],
 	"content_scripts": [
 		{
 			"matches": ["https://www.youtube.com/*"],
