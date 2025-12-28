@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "YouTube Video Summarizer",
-	"version": "1.0",
+	"version": "1.1",
 	"description": "Extract English subtitles from YouTube videos and summarize them using AI",
 	"permissions": ["storage"],
 	"host_permissions": ["https://youtube-summary-ashy.vercel.app/*"],

@@ -1,4 +1,234 @@
 // YouTube Video Summarizer Content Script
+
+// Prevent YouTube from auto-scrolling to transcript panel
+// This runs immediately at document_start to override all scroll methods before YouTube's code runs
+(function () {
+	try {
+		// Helper function to check if element is in transcript panel
+		const isTranscriptElement = function (element) {
+			if (!element || typeof element.closest !== "function") return false;
+			return (
+				element.closest("ytd-engagement-panel-section-list-renderer") !== null ||
+				element.closest("ytd-transcript-renderer") !== null ||
+				element.closest("ytd-engagement-panel-renderer") !== null
+			);
+		};
+
+		// Override scrollIntoView
+		if (!Element.prototype.scrollIntoView._youtubeSummarizerOverridden) {
+			const originalScrollIntoView = Element.prototype.scrollIntoView;
+			Element.prototype.scrollIntoView = function (...args) {
+				if (isTranscriptElement(this)) {
+					return;
+				}
+				return originalScrollIntoView.apply(this, args);
+			};
+			Element.prototype.scrollIntoView._youtubeSummarizerOverridden = true;
+		}
+
+		// Override scrollIntoViewIfNeeded (non-standard but sometimes used)
+		if (Element.prototype.scrollIntoViewIfNeeded && !Element.prototype.scrollIntoViewIfNeeded._youtubeSummarizerOverridden) {
+			const originalScrollIntoViewIfNeeded = Element.prototype.scrollIntoViewIfNeeded;
+			Element.prototype.scrollIntoViewIfNeeded = function (...args) {
+				if (isTranscriptElement(this)) {
+					return;
+				}
+				return originalScrollIntoViewIfNeeded.apply(this, args);
+			};
+			Element.prototype.scrollIntoViewIfNeeded._youtubeSummarizerOverridden = true;
+		}
+
+		// Override scroll, scrollTo, scrollBy on Element
+		const scrollMethods = ["scroll", "scrollTo", "scrollBy"];
+		scrollMethods.forEach((method) => {
+			if (Element.prototype[method] && !Element.prototype[method]._youtubeSummarizerOverridden) {
+				const original = Element.prototype[method];
+				Element.prototype[method] = function (...args) {
+					if (isTranscriptElement(this)) {
+						return;
+					}
+					return original.apply(this, args);
+				};
+				Element.prototype[method]._youtubeSummarizerOverridden = true;
+			}
+		});
+
+		// Override window scroll methods - block ALL window scrolling when transcript panel opens
+		// This is more aggressive but prevents any page-level auto-scrolling
+		let blockWindowScroll = false;
+
+		// Monitor for transcript panel opening
+		const checkForTranscriptPanel = function () {
+			const transcriptPanel = document.querySelector("ytd-engagement-panel-section-list-renderer, ytd-transcript-renderer");
+			blockWindowScroll = transcriptPanel !== null;
+		};
+
+		// Check immediately if DOM is ready
+		if (document.body) {
+			checkForTranscriptPanel();
+		}
+
+		// Monitor for transcript panel changes
+		if (typeof MutationObserver !== "undefined") {
+			const observer = new MutationObserver(function () {
+				checkForTranscriptPanel();
+			});
+
+			if (document.body) {
+				observer.observe(document.body, { childList: true, subtree: true });
+			} else {
+				document.addEventListener("DOMContentLoaded", function () {
+					checkForTranscriptPanel();
+					observer.observe(document.body, { childList: true, subtree: true });
+				});
+			}
+		}
+
+		// Override window scroll methods
+		if (window.scroll && !window.scroll._youtubeSummarizerOverridden) {
+			const originalWindowScroll = window.scroll;
+			window.scroll = function (...args) {
+				if (blockWindowScroll) {
+					return;
+				}
+				return originalWindowScroll.apply(this, args);
+			};
+			window.scroll._youtubeSummarizerOverridden = true;
+		}
+
+		if (window.scrollTo && !window.scrollTo._youtubeSummarizerOverridden) {
+			const originalWindowScrollTo = window.scrollTo;
+			window.scrollTo = function (...args) {
+				if (blockWindowScroll) {
+					return;
+				}
+				return originalWindowScrollTo.apply(this, args);
+			};
+			window.scrollTo._youtubeSummarizerOverridden = true;
+		}
+
+		if (window.scrollBy && !window.scrollBy._youtubeSummarizerOverridden) {
+			const originalWindowScrollBy = window.scrollBy;
+			window.scrollBy = function (...args) {
+				if (blockWindowScroll) {
+					return;
+				}
+				return originalWindowScrollBy.apply(this, args);
+			};
+			window.scrollBy._youtubeSummarizerOverridden = true;
+		}
+
+		// Prevent focusing elements in transcript panel (focus can trigger scrollIntoView)
+		if (!HTMLElement.prototype.focus._youtubeSummarizerOverridden) {
+			const originalFocus = HTMLElement.prototype.focus;
+			HTMLElement.prototype.focus = function (...args) {
+				if (isTranscriptElement(this)) {
+					// Block focus on transcript elements
+					return;
+				}
+				return originalFocus.apply(this, args);
+			};
+			HTMLElement.prototype.focus._youtubeSummarizerOverridden = true;
+		}
+
+		// Monitor for focus changes and immediately blur transcript panel elements
+		let focusBlurTimeout = null;
+		const blurTranscriptElements = function () {
+			const activeElement = document.activeElement;
+			if (activeElement && isTranscriptElement(activeElement)) {
+				activeElement.blur();
+				// Also blur any focused elements within transcript panel
+				const transcriptPanel = document.querySelector("ytd-engagement-panel-section-list-renderer, ytd-transcript-renderer");
+				if (transcriptPanel) {
+					const focusedInPanel = transcriptPanel.querySelector(":focus");
+					if (focusedInPanel) {
+						focusedInPanel.blur();
+					}
+				}
+			}
+		};
+
+		// Monitor focus events
+		document.addEventListener(
+			"focusin",
+			function (e) {
+				if (isTranscriptElement(e.target)) {
+					// Immediately blur if focus goes to transcript element
+					clearTimeout(focusBlurTimeout);
+					focusBlurTimeout = setTimeout(blurTranscriptElements, 0);
+				}
+			},
+			true
+		); // Use capture phase to catch before YouTube's handlers
+
+		// Also monitor for programmatic focus changes
+		const checkAndBlurTranscriptFocus = function () {
+			blurTranscriptElements();
+		};
+
+		// Check periodically for focus on transcript elements
+		setInterval(checkAndBlurTranscriptFocus, 100);
+
+		// Override requestAnimationFrame to check focus before each frame
+		if (!window.requestAnimationFrame._youtubeSummarizerOverridden) {
+			const originalRAF = window.requestAnimationFrame;
+			window.requestAnimationFrame = function (callback) {
+				return originalRAF(function (...args) {
+					blurTranscriptElements();
+					return callback.apply(this, args);
+				});
+			};
+			window.requestAnimationFrame._youtubeSummarizerOverridden = true;
+		}
+	} catch (error) {
+		// Silently fail if override fails (e.g., in environments where Element doesn't exist yet)
+		console.error("[YouTube Summarizer] Error preventing transcript auto-scroll:", error);
+	}
+})();
+
+// Constants
+const CONSTANTS = {
+	// Subtitle extraction
+	MAX_EXTRACTION_ATTEMPTS: 5,
+	MAX_INITIALIZATION_ATTEMPTS: 3,
+	SUBTITLE_EXTRACTION_TIMEOUT_MS: 30000, // 30 seconds
+
+	// Retry delays (exponential backoff)
+	INITIAL_RETRY_DELAY_MS: 1000,
+	MAX_RETRY_DELAY_MS: 12000,
+	RETRY_BACKOFF_MULTIPLIER: 2,
+
+	// Subtitle extraction retry schedule (ms)
+	EXTRACTION_RETRY_DELAYS: [1000, 3000, 5000, 8000, 12000],
+
+	// UI delays
+	JUMP_BUTTON_DELAY_MS: 2000,
+	AUTO_SCROLL_DELAY_MS: 1500,
+	INITIALIZATION_TIMEOUT_MS: 5000,
+	YOUTUBE_LOAD_TIMEOUT_MS: 10000,
+
+	// Chunking
+	CHUNK_SIZE: 25000, // Characters per chunk for API requests
+	INTER_CHUNK_DELAY_MS: 300, // Reduced delay between chunk requests (was 800ms)
+	MAX_RETRIES_PER_CHUNK: 4,
+	MAX_CHARS_FOR_SINGLE_REQUEST: 50000,
+	MAX_CONCURRENT_CHUNKS: 3, // Process up to 3 chunks in parallel for better performance
+
+	// UI thresholds
+	SCROLL_THRESHOLD_PX: 400, // Distance from active caption before marking as scrolled
+	JUMP_BUTTON_DISABLE_DISTANCE_PX: 800, // Distance threshold for disabling jump button
+
+	// Validation
+	MIN_SUBTITLES_FOR_SUMMARY: 5,
+	MIN_SUBTITLES_FOR_RETRY: 10,
+
+	// API
+	DEFAULT_PROXY_BASE_URL: "https://youtube-summary-ashy.vercel.app",
+
+	// Debug
+	DEBUG_MODE: false, // Set to true to enable debug logging
+};
+
 class YouTubeSummarizer {
 	constructor() {
 		this.subtitles = [];
@@ -6,32 +236,127 @@ class YouTubeSummarizer {
 		this.summary = null;
 		this.isProcessing = false;
 		this.extractionAttempts = 0;
-		this.maxExtractionAttempts = 5;
+		this.maxExtractionAttempts = CONSTANTS.MAX_EXTRACTION_ATTEMPTS;
 		this.currentTab = "captions"; // 'captions' or 'summary'
 		this.videoElement = null;
 		this.playbackObserver = null;
 		this.currentActiveIndex = -1;
 		this.lastActiveIndex = -1;
 		this.userScrolled = false;
-		this.scrollThreshold = 400; // pixels from active caption (increased magnetism)
+		this.scrollThreshold = CONSTANTS.SCROLL_THRESHOLD_PX;
 		this.jumpButton = null;
 		this.currentVideoId = null;
-		this.jumpButtonDelay = 2000; // 2 seconds delay before showing jump button
+		this.jumpButtonDelay = CONSTANTS.JUMP_BUTTON_DELAY_MS;
 		this.jumpButtonTimer = null;
 		this.availableCaptionTracks = [];
 		this.selectedCaptionTrack = null;
 		this.themeObserver = null;
-		this.autoScrollDelay = 1500; // 1.5 seconds delay before auto-scrolling back
+		this.autoScrollDelay = CONSTANTS.AUTO_SCROLL_DELAY_MS;
 		this.autoScrollTimer = null;
 		this.autoSummaryGenerated = false; // Flag to prevent multiple auto-generations
 		this.querySubmitting = false; // Flag to prevent duplicate query submissions
 		this.queryEventListeners = []; // Store event listeners for cleanup
 		this.subtitlesExtractionStartTime = null; // Track when subtitle extraction started
 		this.initializationAttempts = 0; // Track initialization attempts
-		this.maxInitializationAttempts = 3; // Maximum initialization attempts
+		this.maxInitializationAttempts = CONSTANTS.MAX_INITIALIZATION_ATTEMPTS;
 		this.initializationComplete = false; // Flag to track if initialization is complete
+		this.initializing = false; // Guard flag to prevent race conditions
 		this.generationProgress = null; // { current, total } progress while chunk-uploading
+		this.mutationObservers = []; // Store MutationObserver instances for cleanup
+		this.videoEventListeners = new Map(); // Store video event listeners for cleanup
+		this.scrollHandler = null; // Store scroll event handler for cleanup
+		this.subtitleRetryTimer = null; // Timer for retrying when subtitles aren't ready
+		this.containerRetryTimer = null; // Timer for retrying when container isn't ready
+		this.videoElementCheckInterval = null; // Interval to check for video element
+		this.videoElementRefreshInterval = null; // Interval to refresh video element reference
+		this.searchQuery = ""; // Current search query
+		this.searchMatches = []; // Array of match indices: [{subtitleIndex, matchIndex, text}]
+		this.currentMatchIndex = -1; // Current match being viewed (-1 means none)
+		this.summarySearchQuery = ""; // Current summary search query
+		this.summarySearchMatches = []; // Array of match indices for summary: [{elementIndex, matchIndex, text}]
+		this.currentSummaryMatchIndex = -1; // Current summary match being viewed (-1 means none)
+		this.themeDetected = false; // Flag to track if theme has been detected
+		this.transcriptPanelOpened = false; // Flag to track if transcript panel has been opened
+		this.transcriptPanelOpenTime = null; // Timestamp when transcript panel was opened
+		this.transcriptPanelDelayMs = 3000; // Delay in ms after transcript panel opens before showing extension
 		this.init();
+	}
+
+	// HTML escaping function to prevent XSS
+	escapeHTML(str) {
+		if (typeof str !== "string") return "";
+		const div = document.createElement("div");
+		div.textContent = str;
+		return div.innerHTML;
+	}
+
+	// Debug logging wrapper
+	log(...args) {
+		if (CONSTANTS.DEBUG_MODE) {
+			console.log("[YouTube Summarizer]", ...args);
+		}
+	}
+
+	// Error logging wrapper
+	logError(message, error) {
+		console.error(`[YouTube Summarizer] ${message}`, error);
+	}
+
+	// Check if chrome.runtime is available
+	isExtensionAvailable() {
+		try {
+			return typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id !== undefined;
+		} catch (error) {
+			return false;
+		}
+	}
+
+	// Helper function to send messages to background script with error handling
+	async sendMessageToBackground(message) {
+		// First check if extension is available
+		if (!this.isExtensionAvailable()) {
+			const error = new Error("Extension was reloaded. Please refresh the page and try again.");
+			error.isContextInvalidated = true;
+			throw error;
+		}
+
+		try {
+			const response = await chrome.runtime.sendMessage(message);
+
+			// Check for chrome.runtime.lastError (common in Chrome extensions)
+			if (chrome.runtime.lastError) {
+				const errorMsg = chrome.runtime.lastError.message;
+				if (
+					errorMsg &&
+					(errorMsg.includes("Extension context invalidated") ||
+						errorMsg.includes("message port closed") ||
+						errorMsg.includes("Receiving end does not exist"))
+				) {
+					const error = new Error("Extension was reloaded. Please refresh the page and try again.");
+					error.isContextInvalidated = true;
+					throw error;
+				}
+				throw new Error(errorMsg || "Background script error");
+			}
+
+			return response;
+		} catch (error) {
+			// Handle "Extension context invalidated" error
+			if (
+				error.message &&
+				(error.message.includes("Extension context invalidated") ||
+					error.message.includes("Extension was reloaded") ||
+					error.message.includes("message port closed") ||
+					error.message.includes("Receiving end does not exist"))
+			) {
+				this.logError("Extension context invalidated", error);
+				const contextError = new Error("Extension was reloaded. Please refresh the page and try again.");
+				contextError.isContextInvalidated = true;
+				throw contextError;
+			}
+			// Re-throw other errors
+			throw error;
+		}
 	}
 
 	// Build a timestamp reference list for specific subtitle indices
@@ -67,9 +392,9 @@ class YouTubeSummarizer {
 
 	// Chunk subtitles with the user's question to maximize answer accuracy
 	async queryInChunks(query, videoTitle, subtitlesText, keyTimestamps, meta) {
-		const CHUNK_SIZE = 30000; // match summary path to minimize requests
-		const INTER_CHUNK_DELAY_MS = 800;
-		const MAX_RETRIES_PER_CHUNK = 4;
+		const CHUNK_SIZE = CONSTANTS.CHUNK_SIZE;
+		const INTER_CHUNK_DELAY_MS = CONSTANTS.INTER_CHUNK_DELAY_MS;
+		const MAX_RETRIES_PER_CHUNK = CONSTANTS.MAX_RETRIES_PER_CHUNK;
 		const chunks = [];
 		for (let i = 0; i < subtitlesText.length; i += CHUNK_SIZE) {
 			chunks.push(subtitlesText.slice(i, i + CHUNK_SIZE));
@@ -80,7 +405,7 @@ class YouTubeSummarizer {
 
 		const perChunkAnswers = [];
 		for (let i = 0; i < chunks.length; i++) {
-			const tsRef = this.buildTimestampReferenceForIndices(chunks[i].indices || [], 25);
+			const tsRef = this.buildTimestampReferenceForIndices(chunks[i].indices || [], CONSTANTS.MAX_TIMESTAMPS_PER_CHUNK || 25);
 			const prompt = `You are answering a question about the YouTube video titled "${videoTitle}".
 
 Question: ${query}
@@ -93,8 +418,12 @@ Available timestamps from this chunk (use only these when referencing moments):
 ${tsRef}
 
 Task: Provide a concise answer based ONLY on this chunk as a bullet list. For EVERY bullet point, you MUST:
-- Start the bullet with exactly one timestamp in [MM:SS] or [HH:MM:SS] format chosen from the list above (the most relevant moment).
-- If no timestamp in the list is relevant for that bullet, use [N/A] and briefly explain why.
+- Include exactly one timestamp in [MM:SS] or [HH:MM:SS] format at the END, chosen from the list above. TIMESTAMP SELECTION STRATEGY:
+  1. FIRST, try to find an exact match where the timestamp content directly relates to your bullet point
+  2. If no exact match exists, find the CLOSEST TIMESTAMP IN TIME to when that content was discussed in this chunk
+  3. Use temporal proximity - if content was discussed around a certain time, use timestamps near that time even if the exact words don't match perfectly
+  4. The goal is to help users jump to the right general time period, so approximate timestamps based on time proximity are acceptable
+- ALWAYS include a timestamp - find the best match based on content OR time proximity. NEVER use [N/A] or write messages about missing timestamps.
 - Do not invent timestamps. Use only the timestamps listed above.`;
 
 			let attempt = 0;
@@ -111,6 +440,15 @@ Task: Provide a concise answer based ONLY on this chunk as a bullet list. For EV
 					perChunkAnswers.push(res.answer);
 					success = true;
 				} catch (e) {
+					// If extension context invalidated, throw immediately
+					if (
+						e.isContextInvalidated ||
+						(e.message && (e.message.includes("Extension context invalidated") || e.message.includes("Extension was reloaded")))
+					) {
+						const error = new Error("Extension was reloaded. Please refresh the page and try again.");
+						error.isContextInvalidated = true;
+						throw error;
+					}
 					lastError = e;
 					const backoffMs = Math.min(10000, 1000 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
 					await new Promise((r) => setTimeout(r, backoffMs));
@@ -143,17 +481,30 @@ ${a}`
 
 Final formatting rules for your output:
 - Output bullets only (you may include short headers, but make the content bullets).
-- EVERY bullet point MUST start with one timestamp in [MM:SS] or [HH:MM:SS] format pulled from the available timestamps above. Choose the best matching moment.
-- If no timestamp is applicable, use [N/A] and briefly explain why.
+- EVERY bullet point MUST include one timestamp in [MM:SS] or [HH:MM:SS] format at the END, pulled from the available timestamps above. TIMESTAMP SELECTION STRATEGY:
+  1. FIRST, try to find an exact match where the timestamp content directly relates to your bullet point
+  2. If no exact match exists, find the CLOSEST TIMESTAMP IN TIME to when that content was discussed
+  3. Use temporal proximity - if content was discussed around a certain time, use timestamps near that time (within 30-60 seconds) even if the exact words don't match perfectly
+  4. The goal is to help users jump to the right general time period, so approximate timestamps based on time proximity are acceptable and preferred
+- ALWAYS include a timestamp - choose based on content match OR time proximity. NEVER use [N/A] or write messages about missing timestamps.
 - Do not invent timestamps. Use only the timestamps listed above.`;
 
 		let combineAttempt = 0;
 		while (combineAttempt < 4) {
 			try {
-				const final = await chrome.runtime.sendMessage({ action: "query", customPrompt: combinePrompt, meta: { ...meta, phase: "q-combine" } });
+				const final = await this.sendMessageToBackground({ action: "query", customPrompt: combinePrompt, meta: { ...meta, phase: "q-combine" } });
 				if (!final || !final.success) throw new Error(final?.error || "Failed to combine answers");
 				return final.answer;
 			} catch (e) {
+				// If extension context invalidated, throw immediately
+				if (
+					e.isContextInvalidated ||
+					(e.message && (e.message.includes("Extension context invalidated") || e.message.includes("Extension was reloaded")))
+				) {
+					const error = new Error("Extension was reloaded. Please refresh the page and try again.");
+					error.isContextInvalidated = true;
+					throw error;
+				}
 				const backoffMs = Math.min(12000, 1000 * Math.pow(2, combineAttempt)) + Math.floor(Math.random() * 250);
 				await new Promise((r) => setTimeout(r, backoffMs));
 				combineAttempt += 1;
@@ -167,19 +518,30 @@ Final formatting rules for your output:
 		try {
 			const summaryContent = document.getElementById("summary-content");
 			if (!summaryContent) return;
-			const pending = summaryContent.querySelector(".query-section:last-child .query-pending p");
-			if (pending) {
-				pending.textContent = `Getting answer... (${Math.min(current, total)}/${total})`;
+			const pendingText = summaryContent.querySelector(".query-section:last-child .query-pending-text");
+			const pendingCounter = summaryContent.querySelector(".query-section:last-child .query-pending-counter");
+			if (pendingText && pendingCounter) {
+				pendingCounter.textContent = ` (${Math.min(current, total)}/${total})`;
 			}
 		} catch (e) {
-			console.error("Error updating query progress:", e);
+			this.logError("Error updating query progress", e);
 		}
 	}
 
 	init() {
+		// Prevent race conditions - only allow one initialization at a time
+		if (this.initializing) {
+			this.log("Initialization already in progress, skipping...");
+			return;
+		}
+
 		try {
-			console.log("Initializing YouTube Summarizer extension...");
+			this.initializing = true;
+			this.log("Initializing YouTube Summarizer extension...");
 			this.initializationAttempts++;
+
+			// Prevent YouTube from auto-scrolling to transcript panel
+			this.preventTranscriptAutoScroll();
 
 			// Start immediately and also wait for YouTube to load
 			this.setupImmediate();
@@ -188,23 +550,29 @@ Final formatting rules for your output:
 			// Set a timeout to retry initialization if it fails
 			setTimeout(() => {
 				if (!this.initializationComplete && this.initializationAttempts < this.maxInitializationAttempts) {
-					console.log(`Initialization incomplete, retrying (attempt ${this.initializationAttempts + 1}/${this.maxInitializationAttempts})...`);
+					this.log(`Initialization incomplete, retrying (attempt ${this.initializationAttempts + 1}/${this.maxInitializationAttempts})...`);
+					this.initializing = false; // Reset guard before retry
 					this.init();
 				} else if (!this.initializationComplete) {
-					console.error("Failed to initialize extension after maximum attempts");
+					this.logError("Failed to initialize extension after maximum attempts");
+					this.initializing = false;
 				}
-			}, 5000); // 5 second timeout
+			}, CONSTANTS.INITIALIZATION_TIMEOUT_MS);
 		} catch (error) {
-			console.error("Error during initialization:", error);
+			this.logError("Error during initialization", error);
+			this.initializing = false; // Reset guard on error
 			if (this.initializationAttempts < this.maxInitializationAttempts) {
-				setTimeout(() => this.init(), 2000);
+				setTimeout(() => {
+					this.initializing = false; // Reset guard before retry
+					this.init();
+				}, CONSTANTS.INITIAL_RETRY_DELAY_MS * 2);
 			}
 		}
 	}
 
 	setupImmediate() {
 		try {
-			console.log("Setting up YouTube Summarizer extension...");
+			this.log("Setting up YouTube Summarizer extension...");
 
 			// Create UI immediately
 			this.createSummaryUI();
@@ -224,18 +592,18 @@ Final formatting rules for your output:
 			// Also retry after a delay in case YouTube hasn't loaded yet
 			setTimeout(() => {
 				if (!document.getElementById("youtube-summarizer-container")) {
-					console.log("Retrying UI creation after delay...");
+					this.log("Retrying UI creation after delay...");
 					this.createSummaryUI();
 				}
 
 				// Mark initialization as complete if UI exists
 				if (document.getElementById("youtube-summarizer-container")) {
 					this.initializationComplete = true;
-					console.log("Extension initialization completed successfully");
+					this.log("Extension initialization completed successfully");
 				}
 			}, 2000);
 		} catch (error) {
-			console.error("Error in setupImmediate:", error);
+			this.logError("Error in setupImmediate", error);
 		}
 	}
 
@@ -297,32 +665,45 @@ Final formatting rules for your output:
 			// Only refresh if it's actually a different video and we're on a video page
 			if (newVideoId && newVideoId !== this.currentVideoId && location.pathname === "/watch") {
 				this.currentVideoId = newVideoId;
-				console.log("Video changed, refreshing extension...");
+				this.log("Video changed, refreshing extension...");
 
-				// Reset all state
+				// Reset all state (this clears UI and data)
 				this.resetState();
 
-				// Reinitialize after a short delay to let YouTube load
+				// Clear video element reference to force re-detection
+				this.videoElement = null;
+
+				// Reinitialize after a delay to let YouTube load
+				// Use a longer delay to ensure YouTube has fully loaded the new video
 				setTimeout(() => {
-					this.setupImmediate();
-				}, 1000);
+					// Double-check we're still on the same video
+					const currentVideoId = this.extractVideoId(location.href);
+					if (currentVideoId === this.currentVideoId) {
+						this.setupImmediate();
+					}
+				}, 1500);
 			} else if (location.pathname === "/watch" && newVideoId && !this.currentVideoId) {
 				// First time loading a video page
 				this.currentVideoId = newVideoId;
-				console.log("First time loading video page, initializing extension...");
+				this.log("First time loading video page, initializing extension...");
 
 				// Initialize the extension
 				setTimeout(() => {
 					this.setupImmediate();
 				}, 500);
+			} else if (location.pathname !== "/watch" && this.currentVideoId) {
+				// Navigated away from video page, reset state
+				this.log("Navigated away from video page, resetting...");
+				this.resetState();
+				this.currentVideoId = null;
 			}
 		} catch (error) {
-			console.error("Error handling video change:", error);
+			this.logError("Error handling video change", error);
 		}
 	}
 
 	resetState() {
-		// Clear all data
+		// Clear all data FIRST before UI changes
 		this.subtitles = [];
 		this.subtitleTimings = [];
 		this.summary = null;
@@ -338,9 +719,74 @@ Final formatting rules for your output:
 		this.subtitlesExtractionStartTime = null; // Reset extraction start time
 		this.initializationComplete = false; // Reset initialization flag
 		this.initializationAttempts = 0; // Reset initialization attempts
+		this.initializing = false; // Reset initialization guard
+		this.generationProgress = null; // Reset generation progress
+		this.searchQuery = ""; // Clear search query
+		this.searchMatches = [];
+		this.currentMatchIndex = -1;
+		this.summarySearchQuery = ""; // Clear summary search query
+		this.summarySearchMatches = []; // Clear summary search matches
+		this.currentSummaryMatchIndex = -1; // Reset summary match index
+		this.searchMatches = []; // Clear search matches
+		this.currentMatchIndex = -1; // Reset match index
+
+		// Clear search input UI
+		const searchInput = document.getElementById("subtitle-search");
+		if (searchInput) {
+			searchInput.value = "";
+		}
+		this.updateSearchUI();
+
+		// Clear summary search input UI
+		const summarySearchInput = document.getElementById("summary-search");
+		if (summarySearchInput) {
+			summarySearchInput.value = "";
+		}
+		this.updateSummarySearchUI();
+
+		// Clear subtitle display UI immediately to prevent showing old captions
+		const subtitlesContent = document.getElementById("subtitles-content");
+		if (subtitlesContent) {
+			const subtitlesInfo = subtitlesContent.querySelector("#subtitles-info");
+			const subtitlesInfoHTML = subtitlesInfo ? subtitlesInfo.outerHTML : "";
+			subtitlesContent.innerHTML = subtitlesInfoHTML + '<p class="placeholder">Extracting subtitles...</p>';
+		}
+
+		// Clear summary display
+		const summaryContent = document.getElementById("summary-content");
+		if (summaryContent) {
+			summaryContent.innerHTML = '<p class="placeholder">Click "Generate Summary" to get an AI summary of this video</p>';
+		}
 
 		// Clean up query event listeners
 		this.cleanupQueryEventListeners();
+
+		// Clean up mutation observers
+		if (this.mutationObservers && this.mutationObservers.length > 0) {
+			this.mutationObservers.forEach((obs) => obs.disconnect());
+			this.mutationObservers = [];
+		}
+
+		// Clean up theme observer
+		if (this.themeObserver) {
+			this.themeObserver.disconnect();
+			this.themeObserver = null;
+		}
+
+		// Reset theme detection flags
+		this.themeDetected = false;
+		this.videoInfoReady = false;
+		this.pendingContainer = null;
+		this.transcriptPanelOpened = false;
+		this.transcriptPanelOpenTime = null;
+
+		// Clean up video event listeners
+		if (this.videoElement && this.videoEventListeners.size > 0) {
+			this.videoEventListeners.forEach((handler, event) => {
+				this.videoElement.removeEventListener(event, handler);
+			});
+			this.videoEventListeners.clear();
+		}
 
 		// Stop playback tracking
 		this.stopPlaybackTracking();
@@ -349,6 +795,37 @@ Final formatting rules for your output:
 		if (this.jumpButtonTimer) {
 			clearTimeout(this.jumpButtonTimer);
 			this.jumpButtonTimer = null;
+		}
+
+		// Clear auto-scroll timer
+		if (this.autoScrollTimer) {
+			clearTimeout(this.autoScrollTimer);
+			this.autoScrollTimer = null;
+		}
+
+		// Clean up scroll handler
+		const captionsContainer = document.getElementById("subtitles-content");
+		if (captionsContainer && this.scrollHandler) {
+			captionsContainer.removeEventListener("scroll", this.scrollHandler);
+			this.scrollHandler = null;
+		}
+
+		// Clear retry timers
+		if (this.subtitleRetryTimer) {
+			clearTimeout(this.subtitleRetryTimer);
+			this.subtitleRetryTimer = null;
+		}
+		if (this.containerRetryTimer) {
+			clearTimeout(this.containerRetryTimer);
+			this.containerRetryTimer = null;
+		}
+		if (this.videoElementCheckInterval) {
+			clearInterval(this.videoElementCheckInterval);
+			this.videoElementCheckInterval = null;
+		}
+		if (this.videoElementRefreshInterval) {
+			clearInterval(this.videoElementRefreshInterval);
+			this.videoElementRefreshInterval = null;
 		}
 
 		// Remove existing UI
@@ -367,7 +844,7 @@ Final formatting rules for your output:
 	// Recovery method to reinitialize the extension if it fails
 	recoverExtension() {
 		try {
-			console.log("Attempting to recover extension...");
+			this.log("Attempting to recover extension...");
 
 			// Reset state
 			this.resetState();
@@ -375,13 +852,14 @@ Final formatting rules for your output:
 			// Reinitialize
 			this.initializationAttempts = 0;
 			this.initializationComplete = false;
+			this.initializing = false; // Reset guard
 
 			// Wait a moment then reinitialize
 			setTimeout(() => {
 				this.setupImmediate();
 			}, 1000);
 		} catch (error) {
-			console.error("Error during extension recovery:", error);
+			this.logError("Error during extension recovery", error);
 		}
 	}
 
@@ -401,7 +879,7 @@ Final formatting rules for your output:
 				summaryContent.innerHTML = recoveryHTML;
 			}
 		} catch (error) {
-			console.error("Error adding recovery button:", error);
+			this.logError("Error adding recovery button", error);
 		}
 	}
 
@@ -415,7 +893,7 @@ Final formatting rules for your output:
 
 			if (moviePlayer && secondary && primary && videoElement) {
 				clearInterval(checkInterval);
-				console.log("YouTube page fully loaded, setting up video tracking...");
+				this.log("YouTube page fully loaded, setting up video tracking...");
 
 				// Setup video playback tracking after YouTube is fully loaded
 				setTimeout(() => {
@@ -427,91 +905,112 @@ Final formatting rules for your output:
 		// Also set a timeout to prevent infinite checking
 		setTimeout(() => {
 			clearInterval(checkInterval);
-			console.log("YouTube load timeout reached, proceeding anyway...");
+			this.log("YouTube load timeout reached, proceeding anyway...");
 			this.setupVideoPlaybackTracking();
-		}, 10000); // 10 second timeout
+		}, CONSTANTS.YOUTUBE_LOAD_TIMEOUT_MS);
 	}
 
 	setupSubtitlesExtraction() {
 		try {
-			console.log("Setting up subtitle extraction...");
+			this.log("Setting up subtitle extraction...");
 
 			// Track when subtitle extraction started for this video
 			this.subtitlesExtractionStartTime = Date.now();
 
-			// Extract subtitles immediately and then with delays
+			// Extract subtitles immediately
 			this.extractAllSubtitles();
 
-			// Also extract with delays for better coverage
-			setTimeout(() => {
-				console.log("First retry of subtitle extraction...");
-				this.extractAllSubtitles();
-			}, 1000);
-
-			setTimeout(() => {
-				console.log("Second retry of subtitle extraction...");
-				this.extractAllSubtitles();
-			}, 3000);
+			// Schedule retries with exponential backoff
+			CONSTANTS.EXTRACTION_RETRY_DELAYS.forEach((delay, index) => {
+				setTimeout(() => {
+					if (this.subtitles.length < CONSTANTS.MIN_SUBTITLES_FOR_SUMMARY && this.extractionAttempts < this.maxExtractionAttempts) {
+						this.log(`Retry ${index + 1} of subtitle extraction...`);
+						this.extractAllSubtitles();
+					} else if (this.subtitles.length >= CONSTANTS.MIN_SUBTITLES_FOR_SUMMARY) {
+						this.log(`Found ${this.subtitles.length} subtitles`);
+					}
+				}, delay);
+			});
 
 			// Force refresh caption discovery after a longer delay
 			setTimeout(() => {
-				console.log("Force refreshing caption discovery...");
-				this.forceRefreshCaptionDiscovery();
-			}, 5000);
-
-			// Additional retry if no subtitles found after 8 seconds
-			setTimeout(() => {
-				if (this.subtitles.length === 0) {
-					console.log("No subtitles found after 8 seconds, retrying extraction...");
-					this.extractAllSubtitles();
-				} else {
-					console.log(`Found ${this.subtitles.length} subtitles after 8 seconds`);
+				if (this.subtitles.length < CONSTANTS.MIN_SUBTITLES_FOR_SUMMARY) {
+					this.log("Force refreshing caption discovery...");
+					this.forceRefreshCaptionDiscovery();
 				}
-			}, 8000);
-
-			// Final check and retry after 12 seconds
-			setTimeout(() => {
-				if (this.subtitles.length < 5) {
-					console.log("Still insufficient subtitles after 12 seconds, final retry...");
-					this.extractAllSubtitles();
-				} else {
-					console.log(`Final subtitle count: ${this.subtitles.length}`);
-				}
-			}, 12000);
+			}, CONSTANTS.EXTRACTION_RETRY_DELAYS[2]); // Use third delay (5000ms)
 
 			// Monitor for changes with a more conservative approach
-			const observer = new MutationObserver(() => {
-				// Only re-extract if we don't have many subtitles yet and haven't tried too many times
-				if (this.subtitles.length < 10 && this.extractionAttempts < this.maxExtractionAttempts) {
-					setTimeout(() => {
+			// Debounce function to prevent rapid mutation observer triggers
+			let mutationDebounceTimer = null;
+			const debouncedExtract = () => {
+				if (mutationDebounceTimer) {
+					clearTimeout(mutationDebounceTimer);
+				}
+				mutationDebounceTimer = setTimeout(() => {
+					// Check if YouTube UI dialogs are open - if so, don't interfere
+					const settingsMenu = document.querySelector("ytd-menu-popup-renderer, ytd-menu-renderer[open], .ytp-popup");
+					if (settingsMenu) {
+						// YouTube UI is open, don't interfere
+						return;
+					}
+
+					// Only re-extract if we don't have many subtitles yet and haven't tried too many times
+					if (this.subtitles.length < CONSTANTS.MIN_SUBTITLES_FOR_RETRY && this.extractionAttempts < this.maxExtractionAttempts) {
 						this.extractAllSubtitles();
-					}, 1000);
+					}
+				}, 1000); // Debounce for 1 second
+			};
+
+			const observer = new MutationObserver((mutations) => {
+				// Only react to mutations that are likely subtitle-related
+				// Ignore mutations from YouTube's UI dialogs and menus
+				const hasRelevantMutation = mutations.some((mutation) => {
+					const target = mutation.target;
+					// Skip if mutation is in YouTube's UI elements
+					if (target.closest("ytd-menu-popup-renderer, ytd-menu-renderer, .ytp-popup, .ytp-settings-menu")) {
+						return false;
+					}
+					// Only react to changes in subtitle-related elements
+					return (
+						target.closest("ytd-transcript-renderer, .ytp-caption-window-container, .ytp-caption-segment") !== null ||
+						target.querySelector("ytd-transcript-renderer, .ytp-caption-window-container") !== null
+					);
+				});
+
+				if (hasRelevantMutation) {
+					debouncedExtract();
 				}
 			});
 
-			// Observe the video player for changes
+			// Observe the video player for changes, but be more selective
 			const videoPlayer = document.querySelector("#movie_player");
 			if (videoPlayer) {
 				observer.observe(videoPlayer, {
 					childList: true,
-					subtree: true,
+					subtree: false, // Don't observe entire subtree to avoid catching YouTube UI changes
 				});
+				this.mutationObservers.push(observer);
 			}
 
-			// Also observe for transcript panel changes
+			// Also observe for transcript panel changes specifically
 			const transcriptPanel = document.querySelector("ytd-transcript-renderer");
 			if (transcriptPanel) {
-				observer.observe(transcriptPanel, {
+				const transcriptObserver = new MutationObserver(() => {
+					debouncedExtract();
+				});
+				transcriptObserver.observe(transcriptPanel, {
 					childList: true,
 					subtree: true,
 				});
+				this.mutationObservers.push(transcriptObserver);
 			}
 		} catch (error) {
-			console.error("Error in setupSubtitlesExtraction:", error);
+			this.logError("Error in setupSubtitlesExtraction", error);
 			// Retry after error
 			setTimeout(() => {
 				this.setupSubtitlesExtraction();
-			}, 2000);
+			}, CONSTANTS.INITIAL_RETRY_DELAY_MS * 2);
 		}
 	}
 
@@ -519,8 +1018,8 @@ Final formatting rules for your output:
 	validateSubtitlesForSummary() {
 		try {
 			// Check if we have enough subtitles
-			if (this.subtitles.length < 5) {
-				console.log(`Not enough subtitles (${this.subtitles.length}), need at least 5`);
+			if (this.subtitles.length < CONSTANTS.MIN_SUBTITLES_FOR_SUMMARY) {
+				this.log(`Not enough subtitles (${this.subtitles.length}), need at least ${CONSTANTS.MIN_SUBTITLES_FOR_SUMMARY}`);
 				return false;
 			}
 
@@ -528,72 +1027,142 @@ Final formatting rules for your output:
 			const hasValidContent = this.subtitles.every((subtitle) => subtitle && subtitle.trim().length > 0);
 
 			if (!hasValidContent) {
-				console.log("Some subtitles are empty or invalid");
+				this.log("Some subtitles are empty or invalid");
 				return false;
 			}
 
 			// Check if we have timing information
 			if (!this.subtitleTimings || this.subtitleTimings.length === 0) {
-				console.log("No timing information available");
+				this.log("No timing information available");
 				return false;
 			}
 
 			// Check if extraction was recent
 			if (!this.subtitlesExtractionStartTime) {
-				console.log("No extraction start time");
+				this.log("No extraction start time");
 				return false;
 			}
 
 			const timeSinceExtraction = Date.now() - this.subtitlesExtractionStartTime;
-			if (timeSinceExtraction > 30000) {
-				console.log("Subtitles are too old");
+			if (timeSinceExtraction > CONSTANTS.SUBTITLE_EXTRACTION_TIMEOUT_MS) {
+				this.log("Subtitles are too old");
 				return false;
 			}
 
-			console.log(`Subtitles validated: ${this.subtitles.length} subtitles, ${this.subtitleTimings.length} timings`);
+			this.log(`Subtitles validated: ${this.subtitles.length} subtitles, ${this.subtitleTimings.length} timings`);
 			return true;
 		} catch (error) {
-			console.error("Error validating subtitles:", error);
+			this.logError("Error validating subtitles", error);
 			return false;
 		}
 	}
 
 	setupVideoPlaybackTracking() {
 		try {
-			this.videoElement = document.querySelector("video");
-			if (this.videoElement) {
-				// Track playback time updates
-				this.videoElement.addEventListener("timeupdate", () => {
-					this.updateActiveCaption();
+			// Clean up existing listeners first
+			if (this.videoElement && this.videoEventListeners.size > 0) {
+				this.videoEventListeners.forEach((handler, event) => {
+					this.videoElement.removeEventListener(event, handler);
 				});
-
-				// Track when video starts playing
-				this.videoElement.addEventListener("play", () => {
-					this.startPlaybackTracking();
-				});
-
-				// Track when video pauses
-				this.videoElement.addEventListener("pause", () => {
-					this.stopPlaybackTracking();
-				});
-
-				// Track when video is ready to play
-				this.videoElement.addEventListener("loadeddata", () => {
-					// Immediately update active caption when video is ready
-					setTimeout(() => {
-						this.updateActiveCaption();
-					}, 100);
-				});
-
-				// Also update active caption immediately if video is already loaded
-				if (this.videoElement.readyState >= 2) {
-					setTimeout(() => {
-						this.updateActiveCaption();
-					}, 100);
-				}
+				this.videoEventListeners.clear();
 			}
+
+			// Try to get video element
+			this.videoElement = document.querySelector("video");
+
+			// If video element not found, set up a periodic check
+			if (!this.videoElement) {
+				// Clear any existing interval
+				if (this.videoElementCheckInterval) {
+					clearInterval(this.videoElementCheckInterval);
+				}
+
+				// Check periodically for video element (max 10 attempts = 5 seconds)
+				let attempts = 0;
+				this.videoElementCheckInterval = setInterval(() => {
+					attempts++;
+					this.videoElement = document.querySelector("video");
+					if (this.videoElement || attempts >= 10) {
+						clearInterval(this.videoElementCheckInterval);
+						this.videoElementCheckInterval = null;
+						if (this.videoElement) {
+							// Video element found, set up tracking
+							this.setupVideoEventListeners();
+						}
+					}
+				}, 500);
+				return;
+			}
+
+			// Video element found, set up event listeners
+			this.setupVideoEventListeners();
 		} catch (error) {
-			console.error("Error setting up video playback tracking:", error);
+			this.logError("Error setting up video playback tracking", error);
+		}
+	}
+
+	setupVideoEventListeners() {
+		try {
+			if (!this.videoElement) return;
+
+			// Create bound handlers for cleanup
+			const timeUpdateHandler = () => {
+				this.updateActiveCaption();
+			};
+			const playHandler = () => {
+				this.startPlaybackTracking();
+			};
+			const pauseHandler = () => {
+				this.stopPlaybackTracking();
+			};
+			const loadedDataHandler = () => {
+				// Immediately update active caption when video is ready
+				setTimeout(() => {
+					this.updateActiveCaption();
+				}, 100);
+			};
+
+			// Track playback time updates
+			this.videoElement.addEventListener("timeupdate", timeUpdateHandler);
+			this.videoEventListeners.set("timeupdate", timeUpdateHandler);
+
+			// Track when video starts playing
+			this.videoElement.addEventListener("play", playHandler);
+			this.videoEventListeners.set("play", playHandler);
+
+			// Track when video pauses
+			this.videoElement.addEventListener("pause", pauseHandler);
+			this.videoEventListeners.set("pause", pauseHandler);
+
+			// Track when video is ready to play
+			this.videoElement.addEventListener("loadeddata", loadedDataHandler);
+			this.videoEventListeners.set("loadeddata", loadedDataHandler);
+
+			// Also update active caption immediately if video is already loaded
+			if (this.videoElement.readyState >= 2) {
+				setTimeout(() => {
+					this.updateActiveCaption();
+				}, 100);
+			}
+
+			// Set up a periodic check to refresh video element reference
+			// YouTube may replace the video element during navigation
+			if (this.videoElementRefreshInterval) {
+				clearInterval(this.videoElementRefreshInterval);
+			}
+			this.videoElementRefreshInterval = setInterval(() => {
+				const currentVideoElement = document.querySelector("video");
+				if (currentVideoElement && currentVideoElement !== this.videoElement) {
+					// Video element was replaced, re-setup tracking
+					this.log("Video element replaced, re-setting up tracking");
+					this.setupVideoPlaybackTracking();
+				} else if (!currentVideoElement && this.videoElement) {
+					// Video element was removed
+					this.videoElement = null;
+				}
+			}, 2000); // Check every 2 seconds
+		} catch (error) {
+			this.logError("Error setting up video event listeners", error);
 		}
 	}
 
@@ -616,11 +1185,40 @@ Final formatting rules for your output:
 
 	updateActiveCaption() {
 		try {
-			if (!this.videoElement || this.subtitleTimings.length === 0) return;
+			// Try to get video element if we don't have it yet
+			if (!this.videoElement) {
+				this.videoElement = document.querySelector("video");
+				if (!this.videoElement) {
+					// Video element not available yet, retry setup
+					this.setupVideoPlaybackTracking();
+					return;
+				}
+			}
+
+			// Check if we have subtitle timings
+			if (this.subtitleTimings.length === 0) {
+				// Subtitles not loaded yet, wait a bit and retry
+				if (!this.subtitleRetryTimer) {
+					this.subtitleRetryTimer = setTimeout(() => {
+						this.subtitleRetryTimer = null;
+						this.updateActiveCaption();
+					}, 500);
+				}
+				return;
+			}
 
 			const currentTime = this.videoElement.currentTime;
 			const captionsContainer = document.getElementById("subtitles-content");
-			if (!captionsContainer) return;
+			if (!captionsContainer) {
+				// Container not ready yet, retry after a short delay
+				if (!this.containerRetryTimer) {
+					this.containerRetryTimer = setTimeout(() => {
+						this.containerRetryTimer = null;
+						this.updateActiveCaption();
+					}, 200);
+				}
+				return;
+			}
 
 			// Find the active caption based on the most recent prior timestamp
 			let newActiveIndex = -1;
@@ -647,28 +1245,37 @@ Final formatting rules for your output:
 			}
 
 			// Debug logging for timing issues
-			if (newActiveIndex >= 0) {
+			if (newActiveIndex >= 0 && CONSTANTS.DEBUG_MODE) {
 				const activeTiming = this.subtitleTimings[newActiveIndex];
-				console.log(
+				this.log(
 					`Active caption ${newActiveIndex}: ${this.formatTimestamp(activeTiming.start)}-${this.formatTimestamp(
 						activeTiming.end
 					)}, Current time: ${this.formatTimestamp(currentTime)}`
 				);
 			}
 
-			// Only update if the active caption has changed
+			// Update active index if it changed
 			if (newActiveIndex !== this.currentActiveIndex) {
 				this.lastActiveIndex = this.currentActiveIndex;
 				this.currentActiveIndex = newActiveIndex;
+			}
+
+			// Always update highlighting when we have a valid active index
+			// This ensures highlighting works even after DOM rebuild
+			if (newActiveIndex >= 0) {
 				this.updateCaptionHighlighting();
 			}
 
-			// Check if we should auto-scroll (only if user hasn't scrolled away significantly)
-			if (newActiveIndex >= 0 && !this.userScrolled) {
-				// Auto-scroll immediately if user hasn't scrolled away
+			// Check if search bar has content - if so, suspend caption magnetism entirely
+			const searchInput = document.getElementById("subtitle-search");
+			const hasSearchContent = searchInput && searchInput.value.trim().length > 0;
+
+			// Check if we should auto-scroll (only if user hasn't scrolled away significantly AND no search content)
+			if (newActiveIndex >= 0 && !this.userScrolled && !hasSearchContent) {
+				// Auto-scroll immediately if user hasn't scrolled away and no search is active
 				this.autoScrollToActiveCaption(newActiveIndex);
-			} else if (newActiveIndex >= 0 && this.userScrolled) {
-				// If user has scrolled away, use delayed auto-scroll
+			} else if (newActiveIndex >= 0 && this.userScrolled && !hasSearchContent) {
+				// If user has scrolled away and no search is active, use delayed auto-scroll
 				// Clear any existing timer
 				if (this.autoScrollTimer) {
 					clearTimeout(this.autoScrollTimer);
@@ -680,13 +1287,14 @@ Final formatting rules for your output:
 					this.autoScrollTimer = null;
 				}, this.autoScrollDelay);
 			}
+			// If hasSearchContent is true, do nothing - suspend caption magnetism entirely
 
 			// Always show jump button when there's an active caption
 			if (newActiveIndex >= 0) {
 				this.showJumpToActiveButton(newActiveIndex);
 			}
 		} catch (error) {
-			console.error("Error updating active caption:", error);
+			this.logError("Error updating active caption", error);
 		}
 	}
 
@@ -697,6 +1305,12 @@ Final formatting rules for your output:
 
 			const captionItems = captionsContainer.querySelectorAll(".subtitle-item");
 
+			if (captionItems.length === 0) {
+				// No caption items found, reset active index
+				this.currentActiveIndex = -1;
+				return;
+			}
+
 			// Remove highlighting from all captions first
 			captionItems.forEach((item) => {
 				item.classList.remove("active-caption");
@@ -705,9 +1319,12 @@ Final formatting rules for your output:
 			// Add highlighting to the current active caption
 			if (this.currentActiveIndex >= 0 && this.currentActiveIndex < captionItems.length) {
 				captionItems[this.currentActiveIndex].classList.add("active-caption");
+			} else if (this.currentActiveIndex >= captionItems.length) {
+				// Active index is out of bounds, reset it
+				this.currentActiveIndex = -1;
 			}
 		} catch (error) {
-			console.error("Error updating caption highlighting:", error);
+			this.logError("Error updating caption highlighting", error);
 		}
 	}
 
@@ -739,7 +1356,7 @@ Final formatting rules for your output:
 				});
 			}
 		} catch (error) {
-			console.error("Error auto-scrolling to active caption:", error);
+			this.logError("Error auto-scrolling to active caption", error);
 		}
 	}
 
@@ -773,11 +1390,34 @@ Final formatting rules for your output:
 			// Update button state based on distance from active caption
 			this.updateJumpButtonState(activeIndex);
 		} catch (error) {
-			console.error("Error showing jump button:", error);
+			this.logError("Error showing jump button", error);
 		}
 	}
 
 	jumpToActiveCaption(activeIndex) {
+		try {
+			// Check if search bar has content - if so, clear it first
+			const searchInput = document.getElementById("subtitle-search");
+			if (searchInput && searchInput.value.trim().length > 0) {
+				// Clear the search bar first
+				searchInput.value = "";
+				this.searchQuery = "";
+				this.clearSearch();
+				// Wait a moment for search to clear, then scroll to active caption (without changing playback)
+				setTimeout(() => {
+					this.scrollToActiveCaption(activeIndex);
+				}, 100);
+				return;
+			}
+
+			// Scroll to active caption without changing playback
+			this.scrollToActiveCaption(activeIndex);
+		} catch (error) {
+			this.logError("Error jumping to active caption", error);
+		}
+	}
+
+	scrollToActiveCaption(activeIndex) {
 		try {
 			const captionsContainer = document.getElementById("subtitles-content");
 			if (!captionsContainer) return;
@@ -798,7 +1438,7 @@ Final formatting rules for your output:
 				const maxScrollTop = captionsContainer.scrollHeight - containerHeight;
 				const finalScrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
 
-				// Smooth scroll within the container only
+				// Smooth scroll within the container only (NO playback change)
 				captionsContainer.scrollTo({
 					top: finalScrollTop,
 					behavior: "smooth",
@@ -817,7 +1457,7 @@ Final formatting rules for your output:
 				this.updateJumpButtonState(activeIndex);
 			}
 		} catch (error) {
-			console.error("Error jumping to active caption:", error);
+			this.logError("Error scrolling to active caption", error);
 		}
 	}
 
@@ -847,7 +1487,7 @@ Final formatting rules for your output:
 				this.jumpButton.classList.remove("disabled");
 			}
 		} catch (error) {
-			console.error("Error updating jump button state:", error);
+			this.logError("Error updating jump button state", error);
 		}
 	}
 
@@ -855,12 +1495,18 @@ Final formatting rules for your output:
 		try {
 			const captionsContainer = document.getElementById("subtitles-content");
 			if (captionsContainer) {
-				captionsContainer.addEventListener("scroll", () => {
+				// Remove existing listener if it exists to prevent duplicates
+				if (this.scrollHandler) {
+					captionsContainer.removeEventListener("scroll", this.scrollHandler);
+				}
+				// Create bound handler and store it for cleanup
+				this.scrollHandler = () => {
 					this.handleScroll();
-				});
+				};
+				captionsContainer.addEventListener("scroll", this.scrollHandler);
 			}
 		} catch (error) {
-			console.error("Error setting up scroll tracking:", error);
+			this.logError("Error setting up scroll tracking", error);
 		}
 	}
 
@@ -898,7 +1544,7 @@ Final formatting rules for your output:
 				this.updateJumpButtonState(this.currentActiveIndex);
 			}
 		} catch (error) {
-			console.error("Error handling scroll:", error);
+			this.logError("Error handling scroll", error);
 		}
 	}
 
@@ -910,29 +1556,145 @@ Final formatting rules for your output:
 			if (this.extractionAttempts === 1) {
 				this.subtitles = [];
 				this.subtitleTimings = [];
-				console.log("Clearing old subtitles for new video");
+				this.log("Clearing old subtitles for new video");
 			}
+
+			// Store initial subtitle count to detect if we got new subtitles
+			const initialSubtitleCount = this.subtitles.length;
 
 			// First, discover available caption tracks
 			this.discoverCaptionTracks();
 
+			// If we have a selected caption track (especially from transcript panel), use it first
+			// This ensures we prioritize English auto-generated captions
+			if (this.selectedCaptionTrack && this.selectedCaptionTrack.source === "transcript-panel") {
+				this.log("Extracting from selected transcript panel track:", this.selectedCaptionTrack.label);
+				this.extractFromSelectedTrack(false); // Pass false to skip display
+			}
+
 			// Method 1: Extract from transcript panel (manual and auto-generated)
-			this.extractFromTranscript();
+			// Only if we don't have a selected track from transcript panel
+			if (!this.selectedCaptionTrack || this.selectedCaptionTrack.source !== "transcript-panel") {
+				this.extractFromTranscript(false); // Pass false to skip display
+			}
 
 			// Method 2: Extract from subtitle track data (all available tracks)
-			this.extractFromAllSubtitleTracks();
+			// Only if we haven't extracted from transcript panel track
+			if (!this.selectedCaptionTrack || this.selectedCaptionTrack.source !== "transcript-panel") {
+				this.extractFromAllSubtitleTracks(false); // Pass false to skip display
+			}
 
-			// Method 3: Try to enable auto-generated captions if no subtitles found
+			// Method 3: Try to open transcript panel earlier if no subtitles found and no tracks discovered
+			// This ensures we can discover auto-generated captions from transcript panel
+			if (this.subtitles.length === 0 && this.availableCaptionTracks.length === 0 && this.extractionAttempts >= 1) {
+				this.tryOpenTranscriptPanel();
+			}
+
+			// Method 4: Try to enable auto-generated captions if no subtitles found
 			if (this.subtitles.length === 0 && this.extractionAttempts >= 2) {
 				this.tryEnableAutoCaptions();
 			}
 
-			// Method 4: Try to open transcript panel to access all subtitles
-			if (this.subtitles.length === 0 && this.extractionAttempts >= 3) {
-				this.tryOpenTranscriptPanel();
+			// Verify we're still on the same video before displaying
+			const currentVideoId = this.extractVideoId(location.href);
+			if (currentVideoId && currentVideoId !== this.currentVideoId) {
+				this.log("Video changed during extraction, not displaying subtitles");
+				return;
+			}
+
+			// Remove duplicates before checking if we should display
+			// This ensures we check the final count after deduplication
+			this.removeDuplicateSubtitles();
+
+			// Sort subtitles by timestamp (earliest to latest)
+			this.sortSubtitlesByTime();
+
+			// Display subtitles if:
+			// 1. We have subtitles (even if count didn't increase due to deduplication), OR
+			// 2. We have more subtitles than we started with
+			if (this.subtitles.length > 0) {
+				// Always display if we have any subtitles after deduplication
+				this.updateSubtitlesDisplay();
+				this.displaySubtitlesInView();
+			} else if (initialSubtitleCount > 0) {
+				// If we had subtitles before but now have none after deduplication, log it
+				this.log("Warning: All subtitles were removed as duplicates");
 			}
 		} catch (error) {
-			console.error("Error extracting subtitles:", error);
+			this.logError("Error extracting subtitles", error);
+		}
+	}
+
+	// Sort subtitles by timestamp (earliest to latest)
+	sortSubtitlesByTime() {
+		try {
+			if (this.subtitles.length === 0 || this.subtitleTimings.length === 0) {
+				return;
+			}
+
+			// Create array of indices to sort
+			const indices = Array.from({ length: this.subtitles.length }, (_, i) => i);
+
+			// Sort indices based on start time
+			indices.sort((a, b) => {
+				const timeA = this.subtitleTimings[a]?.start || 0;
+				const timeB = this.subtitleTimings[b]?.start || 0;
+				return timeA - timeB;
+			});
+
+			// Reorder both arrays using sorted indices
+			const sortedSubtitles = indices.map((i) => this.subtitles[i]);
+			const sortedTimings = indices.map((i) => this.subtitleTimings[i]);
+
+			this.subtitles = sortedSubtitles;
+			this.subtitleTimings = sortedTimings;
+
+			this.log(`Sorted ${this.subtitles.length} subtitles by timestamp`);
+		} catch (error) {
+			this.logError("Error sorting subtitles by time", error);
+		}
+	}
+
+	// Remove duplicate subtitles based on content and timing
+	// Only removes exact duplicates (same text AND same timestamp within 0.1 seconds)
+	removeDuplicateSubtitles() {
+		try {
+			const seen = new Map();
+			const uniqueSubtitles = [];
+			const uniqueTimings = [];
+			const originalCount = this.subtitles.length;
+
+			for (let i = 0; i < this.subtitles.length; i++) {
+				const subtitle = this.subtitles[i];
+				const timing = this.subtitleTimings[i];
+				const subtitleText = subtitle.trim().toLowerCase();
+
+				// Check if we've seen this exact text at a very similar time (within 0.1 seconds)
+				// This allows the same text at different times to be kept (which is valid)
+				let isDuplicate = false;
+				for (const [key, seenTiming] of seen.entries()) {
+					if (key === subtitleText && Math.abs(seenTiming - timing.start) < 0.1) {
+						isDuplicate = true;
+						break;
+					}
+				}
+
+				if (!isDuplicate) {
+					seen.set(subtitleText, timing.start);
+					uniqueSubtitles.push(subtitle);
+					uniqueTimings.push(timing);
+				}
+			}
+
+			const removedCount = originalCount - uniqueSubtitles.length;
+			if (removedCount > 0) {
+				this.log(`Removed ${removedCount} duplicate subtitles (exact matches only)`);
+			}
+
+			this.subtitles = uniqueSubtitles;
+			this.subtitleTimings = uniqueTimings;
+		} catch (error) {
+			this.logError("Error removing duplicate subtitles", error);
 		}
 	}
 
@@ -1103,18 +1865,32 @@ Final formatting rules for your output:
 	discoverFromTranscriptPanel() {
 		try {
 			// Look for transcript panel with language options
+			const transcriptPanel = document.querySelector("ytd-transcript-renderer");
+			if (!transcriptPanel) return;
+
 			const transcriptItems = document.querySelectorAll(".ytd-transcript-segment-renderer");
-			console.log("Found transcript items:", transcriptItems.length);
+			this.log("Found transcript items:", transcriptItems.length);
 
 			if (transcriptItems.length > 0) {
-				// Check if there are multiple language options in the transcript panel
-				const languageSelector = document.querySelector('[aria-label*="language"], [aria-label*="Language"]');
+				// Check the current language selection in the transcript panel
+				// Look for language indicator text that might show "English (auto-generated)"
+				const languageIndicator = transcriptPanel.querySelector('[aria-label*="language"], [aria-label*="Language"], .ytd-transcript-header-renderer');
+				let currentLanguageLabel = "English";
+				let isAutoGenerated = false;
+
+				if (languageIndicator) {
+					const indicatorText = languageIndicator.textContent.toLowerCase();
+					if (indicatorText.includes("auto-generated") || indicatorText.includes("auto generated")) {
+						isAutoGenerated = true;
+						currentLanguageLabel = "English (auto-generated)";
+					}
+				}
 
 				// If we have transcript items, add as a track option
 				const transcriptSubtitles = [];
 				const timings = [];
 
-				Array.from(transcriptItems).forEach((item) => {
+				Array.from(transcriptItems).forEach((item, index) => {
 					const textElement = item.querySelector(".segment-text");
 					const timestampElement = item.querySelector(".segment-timestamp");
 
@@ -1130,8 +1906,17 @@ Final formatting rules for your output:
 								startTime = this.parseTimestamp(timestampText);
 							}
 
-							// Estimate end time (assuming 3 seconds per subtitle)
-							const endTime = startTime + 3;
+							// Calculate end time based on next item's start time, or estimate
+							let endTime = startTime + 3; // Default estimate
+							if (index < transcriptItems.length - 1) {
+								const nextItem = transcriptItems[index + 1];
+								const nextTimestampElement = nextItem.querySelector(".segment-timestamp");
+								if (nextTimestampElement) {
+									const nextTimestampText = nextTimestampElement.textContent.trim();
+									const nextStartTime = this.parseTimestamp(nextTimestampText);
+									endTime = nextStartTime;
+								}
+							}
 
 							timings.push({
 								start: startTime,
@@ -1142,13 +1927,15 @@ Final formatting rules for your output:
 				});
 
 				if (transcriptSubtitles.length > 0) {
-					// Determine if this is auto-generated or manual
-					const isAutoGenerated = this.detectIfAutoGenerated(transcriptSubtitles);
-					const label = isAutoGenerated ? "English (auto-generated)" : "English";
+					// Determine if this is auto-generated - use both detection methods
+					const detectedAutoGenerated = this.detectIfAutoGenerated(transcriptSubtitles);
+					// Prefer the explicit label from the panel if available
+					const finalIsAutoGenerated = isAutoGenerated || detectedAutoGenerated;
+					const label = finalIsAutoGenerated ? "English (auto-generated)" : currentLanguageLabel;
 
-					console.log(`Adding transcript track: ${label}, auto-generated: ${isAutoGenerated}`);
+					this.log(`Adding transcript track: ${label}, auto-generated: ${finalIsAutoGenerated}, items: ${transcriptSubtitles.length}`);
 
-					// Check if we already have a track with this label
+					// Check if we already have a track with this label and source
 					const existingTrackIndex = this.availableCaptionTracks.findIndex((track) => track.label === label && track.source === "transcript-panel");
 
 					if (existingTrackIndex === -1) {
@@ -1166,10 +1953,19 @@ Final formatting rules for your output:
 							})),
 							source: "transcript-panel",
 							timings: timings,
-							isAutoGenerated: isAutoGenerated,
+							isAutoGenerated: finalIsAutoGenerated,
 						};
 
 						this.availableCaptionTracks.push(trackInfo);
+					} else {
+						// Update existing track with latest data
+						this.availableCaptionTracks[existingTrackIndex].cues = transcriptSubtitles.map((text, index) => ({
+							text: text,
+							startTime: timings[index]?.start || 0,
+							endTime: timings[index]?.end || 0,
+						}));
+						this.availableCaptionTracks[existingTrackIndex].timings = timings;
+						this.availableCaptionTracks[existingTrackIndex].isAutoGenerated = finalIsAutoGenerated;
 					}
 				}
 			}
@@ -1223,14 +2019,44 @@ Final formatting rules for your output:
 				'button[aria-label*="transcript"], button[aria-label*="Transcript"], button[aria-label*="Show transcript"]'
 			);
 			if (transcriptButton) {
+				// Store current scroll position before opening panel
+				const scrollY = window.scrollY || window.pageYOffset;
+				const scrollX = window.scrollX || window.pageXOffset;
+
 				transcriptButton.click();
+
+				// Mark transcript panel as opened and record the time
+				this.transcriptPanelOpened = true;
+				this.transcriptPanelOpenTime = Date.now();
+				this.log("Transcript panel opened for discovery, will wait before showing extension");
+
+				// Immediately restore scroll position and blur focused elements
+				setTimeout(() => {
+					window.scrollTo(scrollX, scrollY);
+					const transcriptPanel = document.querySelector("ytd-engagement-panel-section-list-renderer, ytd-transcript-renderer");
+					if (transcriptPanel) {
+						const focusedElements = transcriptPanel.querySelectorAll(":focus, [tabindex]:focus");
+						focusedElements.forEach((el) => el.blur());
+					}
+				}, 0);
 
 				// Wait for transcript panel to load and then discover
 				setTimeout(() => {
 					this.discoverFromTranscriptPanel();
 					this.checkForMultipleLanguageOptions();
 					this.selectBestCaptionTrack();
+					// Ensure no focus remains on transcript elements
+					const transcriptPanel = document.querySelector("ytd-engagement-panel-section-list-renderer, ytd-transcript-renderer");
+					if (transcriptPanel) {
+						const focusedElements = transcriptPanel.querySelectorAll(":focus, [tabindex]:focus");
+						focusedElements.forEach((el) => el.blur());
+					}
 				}, 1500);
+
+				// Check if we can show container after transcript panel delay
+				setTimeout(() => {
+					this.checkAndShowContainer();
+				}, this.transcriptPanelDelayMs);
 			}
 		} catch (error) {
 			console.error("Error opening transcript panel for discovery:", error);
@@ -1239,41 +2065,73 @@ Final formatting rules for your output:
 
 	checkForMultipleLanguageOptions() {
 		try {
+			const transcriptPanel = document.querySelector("ytd-transcript-renderer");
+			if (!transcriptPanel) return;
+
+			// Priority: English auto-generated > English manual > other languages
 			// Look for language selector buttons in the transcript panel
-			const languageButtons = document.querySelectorAll('[aria-label*="language"], [aria-label*="Language"], [role="button"]');
+			const languageButtons = transcriptPanel.querySelectorAll('button[role="button"], button[aria-label*="language"], button[aria-label*="Language"]');
+
+			let englishAutoGeneratedButton = null;
+			let englishManualButton = null;
 
 			languageButtons.forEach((button) => {
 				const buttonText = button.textContent.toLowerCase();
-				if (buttonText.includes("english") || buttonText.includes("auto")) {
-					// This might be a language option button
-					console.log("Found language option button:", button.textContent);
+				// Check for English auto-generated first
+				if (
+					(buttonText.includes("english") || buttonText.includes("en")) &&
+					(buttonText.includes("auto-generated") || buttonText.includes("auto generated"))
+				) {
+					englishAutoGeneratedButton = button;
+					this.log("Found English auto-generated button:", button.textContent);
+				}
+				// Check for English manual (but not auto-generated)
+				else if ((buttonText.includes("english") || buttonText.includes("en")) && !buttonText.includes("auto")) {
+					if (!englishManualButton) {
+						englishManualButton = button;
+						this.log("Found English manual button:", button.textContent);
+					}
 				}
 			});
 
+			// Click English auto-generated if available, otherwise English manual
+			if (englishAutoGeneratedButton) {
+				this.log("Clicking English auto-generated option");
+				englishAutoGeneratedButton.click();
+				// Wait for panel to update
+				setTimeout(() => {
+					this.discoverFromTranscriptPanel();
+					this.selectBestCaptionTrack();
+				}, 500);
+			} else if (englishManualButton) {
+				this.log("Clicking English manual option");
+				englishManualButton.click();
+				setTimeout(() => {
+					this.discoverFromTranscriptPanel();
+					this.selectBestCaptionTrack();
+				}, 500);
+			}
+
 			// Also check for dropdown menus in the transcript panel
-			const languageDropdowns = document.querySelectorAll("select, [role='listbox']");
+			const languageDropdowns = transcriptPanel.querySelectorAll("select, [role='listbox']");
 			languageDropdowns.forEach((dropdown) => {
 				const options = dropdown.querySelectorAll("option");
 				options.forEach((option) => {
 					const optionText = option.textContent.toLowerCase();
-					if (optionText.includes("english") || optionText.includes("auto")) {
-						console.log("Found language option:", option.textContent);
+					if (
+						(optionText.includes("english") || optionText.includes("en")) &&
+						(optionText.includes("auto-generated") || optionText.includes("auto generated"))
+					) {
+						this.log("Found English auto-generated option in dropdown:", option.textContent);
+						option.selected = true;
+						dropdown.dispatchEvent(new Event("change", { bubbles: true }));
+						setTimeout(() => {
+							this.discoverFromTranscriptPanel();
+							this.selectBestCaptionTrack();
+						}, 500);
 					}
 				});
 			});
-
-			// Check for YouTube's language selector in the transcript panel
-			const transcriptPanel = document.querySelector("ytd-transcript-renderer");
-			if (transcriptPanel) {
-				// Look for language selector elements
-				const languageSelectors = transcriptPanel.querySelectorAll('[aria-label*="language"], [aria-label*="Language"], button');
-				languageSelectors.forEach((selector) => {
-					const text = selector.textContent.toLowerCase();
-					if (text.includes("english") || text.includes("auto")) {
-						console.log("Found transcript language selector:", selector.textContent);
-					}
-				});
-			}
 		} catch (error) {
 			console.error("Error checking for multiple language options:", error);
 		}
@@ -1385,7 +2243,7 @@ Final formatting rules for your output:
 		}
 	}
 
-	extractFromSelectedTrack() {
+	extractFromSelectedTrack(shouldDisplay = true) {
 		try {
 			if (!this.selectedCaptionTrack) return;
 
@@ -1419,20 +2277,70 @@ Final formatting rules for your output:
 			}
 
 			if (trackSubtitles.length > 0) {
-				this.subtitles = trackSubtitles;
-				this.subtitleTimings = timings;
-				this.updateSubtitlesDisplay();
-				this.displaySubtitlesInView();
+				// Always replace if:
+				// 1. We have no subtitles yet, OR
+				// 2. The new set has more subtitles, OR
+				// 3. This is from transcript panel (preferred source) and we have subtitles from a different source
+				const isPreferredSource = this.selectedCaptionTrack && this.selectedCaptionTrack.source === "transcript-panel";
+				const shouldReplace =
+					this.subtitles.length === 0 || trackSubtitles.length > this.subtitles.length || (isPreferredSource && this.subtitles.length > 0);
+
+				if (shouldReplace) {
+					this.log(
+						`Replacing subtitles: ${this.subtitles.length} -> ${trackSubtitles.length} (source: ${
+							this.selectedCaptionTrack?.source || "unknown"
+						})`
+					);
+					this.subtitles = trackSubtitles;
+					this.subtitleTimings = timings;
+					// Sort subtitles by timestamp
+					this.sortSubtitlesByTime();
+					if (shouldDisplay) {
+						this.updateSubtitlesDisplay();
+						this.displaySubtitlesInView();
+					}
+				}
 			}
 		} catch (error) {
-			console.error("Error extracting from selected track:", error);
+			this.logError("Error extracting from selected track", error);
 		}
 	}
 
-	extractFromTranscript() {
+	extractFromTranscript(shouldDisplay = true) {
 		try {
+			// First check if we have a selected track from transcript panel - use that preferentially
+			if (this.selectedCaptionTrack && this.selectedCaptionTrack.source === "transcript-panel") {
+				this.log("Using selected transcript panel track for extraction:", this.selectedCaptionTrack.label);
+				this.extractFromSelectedTrack(shouldDisplay);
+				return;
+			}
+
 			const transcriptItems = document.querySelectorAll(".ytd-transcript-segment-renderer");
 			if (transcriptItems.length > 0) {
+				// Check if we should prefer English auto-generated captions
+				// Look for language selector in transcript panel to see if we can switch to English auto-generated
+				const transcriptPanel = document.querySelector("ytd-transcript-renderer");
+				if (transcriptPanel) {
+					// Try to find and click English auto-generated option if available
+					const languageButtons = transcriptPanel.querySelectorAll('[aria-label*="language"], [aria-label*="Language"], button[role="button"]');
+					for (const button of languageButtons) {
+						const buttonText = button.textContent.toLowerCase();
+						// Look for English auto-generated option
+						if (
+							(buttonText.includes("english") || buttonText.includes("en")) &&
+							(buttonText.includes("auto-generated") || buttonText.includes("auto generated"))
+						) {
+							this.log("Found English auto-generated option in transcript panel, clicking...");
+							button.click();
+							// Wait for the panel to update, then extract
+							setTimeout(() => {
+								this.extractFromTranscript(shouldDisplay);
+							}, 1000);
+							return;
+						}
+					}
+				}
+
 				const transcriptSubtitles = [];
 				const timings = [];
 
@@ -1473,25 +2381,49 @@ Final formatting rules for your output:
 				});
 
 				if (transcriptSubtitles.length > 0) {
-					this.subtitles = transcriptSubtitles;
-					this.subtitleTimings = timings;
-					this.updateSubtitlesDisplay();
-					this.displaySubtitlesInView();
+					// Detect if these are auto-generated and update available tracks
+					const isAutoGenerated = this.detectIfAutoGenerated(transcriptSubtitles);
+
+					// Always replace if:
+					// 1. We have no subtitles yet, OR
+					// 2. The new set has more subtitles, OR
+					// 3. This is English auto-generated and current is not, OR
+					// 4. This is from transcript panel (preferred source) and new set is substantial
+					const currentIsAutoGenerated = this.subtitles.length > 0 ? this.detectIfAutoGenerated(this.subtitles) : false;
+					const shouldReplace =
+						this.subtitles.length === 0 ||
+						transcriptSubtitles.length > this.subtitles.length ||
+						(isAutoGenerated && !currentIsAutoGenerated) ||
+						transcriptSubtitles.length >= this.subtitles.length * 0.8; // Allow replacement if new set is at least 80% of current size
+
+					if (shouldReplace) {
+						this.log(
+							`Replacing subtitles from transcript: ${this.subtitles.length} -> ${transcriptSubtitles.length} (auto-generated: ${isAutoGenerated})`
+						);
+						this.subtitles = transcriptSubtitles;
+						this.subtitleTimings = timings;
+						// Sort subtitles by timestamp
+						this.sortSubtitlesByTime();
+						if (shouldDisplay) {
+							this.updateSubtitlesDisplay();
+							this.displaySubtitlesInView();
+						}
+					}
 				}
 			}
 		} catch (error) {
-			console.error("Error extracting from transcript:", error);
+			this.logError("Error extracting from transcript", error);
 		}
 	}
 
-	extractFromAllSubtitleTracks() {
+	extractFromAllSubtitleTracks(shouldDisplay = true) {
 		try {
 			// Try to access the video element and all its text tracks
 			const videoElement = document.querySelector("video");
 			if (videoElement && videoElement.textTracks) {
 				// If we have a selected track, use that
 				if (this.selectedCaptionTrack) {
-					this.extractFromSelectedTrack();
+					this.extractFromSelectedTrack(shouldDisplay);
 					return;
 				}
 
@@ -1520,17 +2452,27 @@ Final formatting rules for your output:
 						});
 
 						if (trackSubtitles.length > 0) {
-							this.subtitles = trackSubtitles;
-							this.subtitleTimings = timings;
-							this.updateSubtitlesDisplay();
-							this.displaySubtitlesInView();
+							// Always replace if we have no subtitles, or if new set is larger
+							// Allow replacement if new set is at least 80% of current size (to handle partial extractions)
+							const shouldReplace =
+								this.subtitles.length === 0 ||
+								trackSubtitles.length > this.subtitles.length ||
+								(trackSubtitles.length >= this.subtitles.length * 0.8 && this.subtitles.length > 0);
+							if (shouldReplace) {
+								this.log(`Replacing subtitles from track: ${this.subtitles.length} -> ${trackSubtitles.length}`);
+								this.subtitles = trackSubtitles;
+								this.subtitleTimings = timings;
+								// Sort subtitles by timestamp
+								this.sortSubtitlesByTime();
+								// Display is handled by extractAllSubtitles, not here
+							}
 							break;
 						}
 					}
 				}
 			}
 		} catch (error) {
-			console.error("Error extracting from subtitle tracks:", error);
+			this.logError("Error extracting from subtitle tracks", error);
 		}
 	}
 
@@ -1575,6 +2517,13 @@ Final formatting rules for your output:
 
 	tryEnableAutoCaptions() {
 		try {
+			// Check if YouTube UI dialogs are open - if so, don't interfere
+			const settingsMenu = document.querySelector("ytd-menu-popup-renderer, ytd-menu-renderer[open], .ytp-popup");
+			if (settingsMenu) {
+				// YouTube UI is open, don't interfere
+				return;
+			}
+
 			// Try to click the CC button to enable auto-generated captions
 			const ccButton = document.querySelector(".ytp-subtitles-button");
 			if (ccButton && !ccButton.classList.contains("ytp-subtitles-enabled")) {
@@ -1592,16 +2541,80 @@ Final formatting rules for your output:
 
 	tryOpenTranscriptPanel() {
 		try {
+			// Check if YouTube UI dialogs are open - if so, don't interfere
+			const settingsMenu = document.querySelector("ytd-menu-popup-renderer, ytd-menu-renderer[open], .ytp-popup");
+			if (settingsMenu) {
+				// YouTube UI is open, don't interfere
+				return;
+			}
+
 			// Try to open the transcript panel to access all subtitles
 			const transcriptButton = document.querySelector(
 				'button[aria-label*="transcript"], button[aria-label*="Transcript"], button[aria-label*="Show transcript"]'
 			);
 			if (transcriptButton) {
+				// Store current scroll position before opening panel
+				const scrollY = window.scrollY || window.pageYOffset;
+				const scrollX = window.scrollX || window.pageXOffset;
+
 				transcriptButton.click();
 
-				// Wait for transcript panel to load and extract
+				// Mark transcript panel as opened and record the time
+				this.transcriptPanelOpened = true;
+				this.transcriptPanelOpenTime = Date.now();
+				this.log("Transcript panel opened, will wait before showing extension");
+
+				// Immediately restore scroll position after a short delay
 				setTimeout(() => {
-					this.extractFromTranscript();
+					window.scrollTo(scrollX, scrollY);
+					// Also blur any focused elements in transcript panel
+					const transcriptPanel = document.querySelector("ytd-engagement-panel-section-list-renderer, ytd-transcript-renderer");
+					if (transcriptPanel) {
+						const focusedElements = transcriptPanel.querySelectorAll(":focus, [tabindex]:focus");
+						focusedElements.forEach((el) => el.blur());
+					}
+				}, 0);
+
+				// Check if we can show container after transcript panel delay
+				setTimeout(() => {
+					this.checkAndShowContainer();
+				}, this.transcriptPanelDelayMs);
+
+				// Wait for transcript panel to load, then discover tracks and extract
+				setTimeout(() => {
+					// Ensure no focus remains on transcript elements
+					const transcriptPanel = document.querySelector("ytd-engagement-panel-section-list-renderer, ytd-transcript-renderer");
+					if (transcriptPanel) {
+						const focusedElements = transcriptPanel.querySelectorAll(":focus, [tabindex]:focus");
+						focusedElements.forEach((el) => el.blur());
+					}
+
+					// First discover tracks from the transcript panel
+					this.discoverFromTranscriptPanel();
+					// Check for multiple language options and select English auto-generated
+					this.checkForMultipleLanguageOptions();
+					// Select the best track (prioritizes English auto-generated)
+					this.selectBestCaptionTrack();
+
+					// If we have a selected track from transcript panel, extract from it
+					if (this.selectedCaptionTrack && this.selectedCaptionTrack.source === "transcript-panel") {
+						this.log("Extracting from transcript panel track after opening:", this.selectedCaptionTrack.label);
+						this.extractFromSelectedTrack(false);
+					} else {
+						// Fallback to direct extraction
+						this.extractFromTranscript(false);
+					}
+
+					// Trigger a re-extraction to pick up the new subtitles
+					setTimeout(() => {
+						this.extractAllSubtitles();
+						// Final check to ensure no focus on transcript elements
+						const finalPanel = document.querySelector("ytd-engagement-panel-section-list-renderer, ytd-transcript-renderer");
+						if (finalPanel) {
+							const finalFocused = finalPanel.querySelectorAll(":focus, [tabindex]:focus");
+							finalFocused.forEach((el) => el.blur());
+						}
+					}, 500);
 				}, 2500);
 			}
 		} catch (error) {
@@ -1613,7 +2626,7 @@ Final formatting rules for your output:
 		try {
 			// Only create UI if we're on a video page
 			if (location.pathname !== "/watch" || !this.extractVideoId(location.href)) {
-				console.log("Not on a video page, skipping UI creation");
+				this.log("Not on a video page, skipping UI creation");
 				return;
 			}
 
@@ -1626,6 +2639,8 @@ Final formatting rules for your output:
 			// Create the summary container
 			const summaryContainer = document.createElement("div");
 			summaryContainer.id = "youtube-summarizer-container";
+			// Initially hide the container until video info is loaded
+			summaryContainer.style.display = "none";
 			summaryContainer.innerHTML = `
       <div class="summarizer-header">
         <!-- Modern Toggle Tabs -->
@@ -1655,10 +2670,39 @@ Final formatting rules for your output:
           <div id="captions-tab" class="tab-pane active">
             <div id="subtitles-preview" class="subtitles-preview">
               <div class="caption-controls">
-                <label for="caption-track-selector">Caption Track:</label>
-                <select id="caption-track-selector" class="caption-track-selector">
-                  <option value="">Loading captions...</option>
-                </select>
+                <div class="search-controls">
+                  <div class="search-bar-wrapper">
+                    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="11" cy="11" r="8"/>
+                      <path d="m21 21-4.35-4.35"/>
+                    </svg>
+                    <input type="text" id="subtitle-search" class="subtitle-search" placeholder="Search captions" />
+                    <button id="search-clear" class="search-clear-btn" title="Clear search" style="display: none;">
+                      <svg class="clear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                      </svg>
+                    </button>
+                    <div class="search-navigation" id="search-navigation" style="display: none;">
+                      <button id="search-prev" class="search-nav-btn" title="Previous match (↑)">
+                        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                          <path d="M18 15l-6-6-6 6"/>
+                        </svg>
+                      </button>
+                      <span id="search-match-count" class="search-match-count">0/0</span>
+                      <button id="search-next" class="search-nav-btn" title="Next match (↓)">
+                        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                          <path d="M6 9l6 6 6-6"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <button id="copy-captions-btn" class="copy-btn" title="Copy all captions">
+                  <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                </button>
               </div>
               <div id="subtitles-content" class="subtitles-content">
         <div id="subtitles-info" class="subtitles-info">
@@ -1669,6 +2713,41 @@ Final formatting rules for your output:
             </div>
           </div>
           <div id="summary-tab" class="tab-pane">
+            <div class="summary-search-controls">
+              <div class="search-controls">
+                <div class="search-bar-wrapper">
+                  <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="m21 21-4.35-4.35"/>
+                  </svg>
+                  <input type="text" id="summary-search" class="subtitle-search" placeholder="Search summary..." />
+                  <button id="summary-search-clear" class="search-clear-btn" title="Clear search" style="display: none;">
+                    <svg class="clear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                  </button>
+                  <div class="search-navigation" id="summary-search-navigation" style="display: none;">
+                    <button id="summary-search-prev" class="search-nav-btn" title="Previous match (↑)">
+                      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M18 15l-6-6-6 6"/>
+                      </svg>
+                    </button>
+                    <span id="summary-search-match-count" class="search-match-count">0/0</span>
+                    <button id="summary-search-next" class="search-nav-btn" title="Next match (↓)">
+                      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M6 9l6 6 6-6"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <button id="copy-summary-btn" class="copy-btn" title="Copy summary">
+                <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+              </button>
+            </div>
         <div id="summary-content" class="summary-content">
           <p class="placeholder">Click "Generate Summary" to get an AI summary of this video</p>
         </div>
@@ -1680,10 +2759,8 @@ Final formatting rules for your output:
               <div class="query-input-container">
                 <input type="text" id="summary-query-input" class="summary-query-input" placeholder="Ask a Question" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
                 <button id="submit-query-btn" class="submit-query-btn">
-                  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                    <path d="M13 8H7"/>
-                    <path d="M17 12H7"/>
+                  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 11L12 9M12 9L10 11M12 9V15M21.0039 12C21.0039 16.9706 16.9745 21 12.0039 21C9.9675 21 3.00463 21 3.00463 21C3.00463 21 4.56382 17.2561 3.93982 16.0008C3.34076 14.7956 3.00391 13.4372 3.00391 12C3.00391 7.02944 7.03334 3 12.0039 3C16.9745 3 21.0039 7.02944 21.0039 12Z"/>
                   </svg>
                 </button>
               </div>
@@ -1695,6 +2772,9 @@ Final formatting rules for your output:
 
 			// Insert the summary container in the correct position
 			this.insertContainerInCorrectPosition(summaryContainer);
+
+			// Wait for video title and info to load before showing the extension
+			this.waitForVideoInfoAndShow(summaryContainer);
 
 			// Add event listeners
 			this.setupEventListeners();
@@ -1722,7 +2802,7 @@ Final formatting rules for your output:
 				}
 			}, 10000); // 10 seconds timeout
 		} catch (error) {
-			console.error("Error creating summary UI:", error);
+			this.logError("Error creating summary UI", error);
 		}
 	}
 
@@ -1757,6 +2837,13 @@ Final formatting rules for your output:
 
 		// Add event listener for query submit button
 		this.setupQueryEventListeners();
+
+		// Setup search functionality
+		this.setupSearchFunctionality();
+		// Setup summary search functionality
+		this.setupSummarySearchFunctionality();
+		// Setup copy buttons
+		this.setupCopyButtons();
 	}
 
 	switchTab(tabName) {
@@ -1773,6 +2860,13 @@ Final formatting rules for your output:
 		});
 
 		this.currentTab = tabName;
+
+		// Update sticky header top position when switching to summary tab
+		if (tabName === "summary") {
+			setTimeout(() => {
+				this.updateStickyHeaderTop();
+			}, 100); // Small delay to ensure DOM is updated
+		}
 	}
 
 	setupCaptionClickListeners() {
@@ -1791,7 +2885,7 @@ Final formatting rules for your output:
 				});
 			}
 		} catch (error) {
-			console.error("Error setting up caption click listeners:", error);
+			this.logError("Error setting up caption click listeners", error);
 		}
 	}
 
@@ -1803,10 +2897,10 @@ Final formatting rules for your output:
 		try {
 			if (this.videoElement) {
 				this.videoElement.currentTime = timestamp;
-				console.log(`Jumped to timestamp ${this.formatTimestamp(timestamp)}`);
+				this.log(`Jumped to timestamp ${this.formatTimestamp(timestamp)}`);
 			}
 		} catch (error) {
-			console.error("Error jumping to timestamp:", error);
+			this.logError("Error jumping to timestamp", error);
 		}
 	}
 
@@ -1844,7 +2938,7 @@ Final formatting rules for your output:
 				{ element: queryInput, event: "keypress", handler: enterKeyHandler },
 			];
 		} catch (error) {
-			console.error("Error setting up query event listeners:", error);
+			this.logError("Error setting up query event listeners", error);
 		}
 	}
 
@@ -1858,7 +2952,1008 @@ Final formatting rules for your output:
 			});
 			this.queryEventListeners = [];
 		} catch (error) {
-			console.error("Error cleaning up query event listeners:", error);
+			this.logError("Error cleaning up query event listeners", error);
+		}
+	}
+
+	setupSearchFunctionality() {
+		try {
+			const searchInput = document.getElementById("subtitle-search");
+			const searchClearBtn = document.getElementById("search-clear");
+			const searchPrevBtn = document.getElementById("search-prev");
+			const searchNextBtn = document.getElementById("search-next");
+
+			if (!searchInput || !searchClearBtn || !searchPrevBtn || !searchNextBtn) return;
+
+			// Show/hide clear button based on input
+			const updateClearButton = () => {
+				if (searchInput.value.length > 0) {
+					searchClearBtn.style.display = "flex";
+				} else {
+					searchClearBtn.style.display = "none";
+				}
+			};
+
+			// Search input handler
+			searchInput.addEventListener("input", (e) => {
+				const previousQuery = this.searchQuery;
+				this.searchQuery = e.target.value.trim();
+
+				updateClearButton();
+
+				// Disable auto-scroll to active caption during search
+				if (this.searchQuery.length > 0) {
+					this.userScrolled = true;
+					this.performSearch();
+				} else {
+					// Search was cleared - jump back to active caption
+					this.userScrolled = false;
+					this.clearSearch();
+					this.jumpToActiveCaptionAfterClear();
+				}
+			});
+
+			// Clear button click handler
+			searchClearBtn.addEventListener("click", (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				searchInput.value = "";
+				this.searchQuery = "";
+				this.userScrolled = false;
+				updateClearButton();
+				this.clearSearch();
+				this.jumpToActiveCaptionAfterClear();
+			});
+
+			// Keyboard shortcuts for search navigation
+			searchInput.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") {
+					e.preventDefault();
+					if (e.shiftKey) {
+						this.navigateToMatch(-1); // Shift+Enter = previous
+					} else {
+						this.navigateToMatch(1); // Enter = next
+					}
+				} else if (e.key === "ArrowUp") {
+					e.preventDefault();
+					this.navigateToMatch(-1);
+				} else if (e.key === "ArrowDown") {
+					e.preventDefault();
+					this.navigateToMatch(1);
+				} else if (e.key === "Escape") {
+					e.preventDefault();
+					searchInput.value = "";
+					this.searchQuery = "";
+					this.userScrolled = false;
+					updateClearButton();
+					this.clearSearch();
+					this.jumpToActiveCaptionAfterClear();
+				}
+			});
+
+			// Navigation buttons
+			searchPrevBtn.addEventListener("click", () => {
+				this.navigateToMatch(-1);
+			});
+
+			searchNextBtn.addEventListener("click", () => {
+				this.navigateToMatch(1);
+			});
+		} catch (error) {
+			this.logError("Error setting up search functionality", error);
+		}
+	}
+
+	performSearch() {
+		try {
+			this.searchMatches = [];
+			this.currentMatchIndex = -1;
+
+			if (!this.searchQuery || this.searchQuery.length === 0) {
+				this.updateSearchUI();
+				// Redisplay subtitles without highlights
+				if (this.subtitles.length > 0) {
+					this.displaySubtitlesInView();
+				}
+				return;
+			}
+
+			const query = this.searchQuery.toLowerCase();
+
+			// Find all matches in subtitles
+			this.subtitles.forEach((subtitle, subtitleIndex) => {
+				const subtitleLower = subtitle.toLowerCase();
+				let searchIndex = 0;
+
+				// Find all occurrences of the query in this subtitle
+				while ((searchIndex = subtitleLower.indexOf(query, searchIndex)) !== -1) {
+					this.searchMatches.push({
+						subtitleIndex: subtitleIndex,
+						matchIndex: searchIndex,
+						text: subtitle.substring(searchIndex, searchIndex + query.length),
+					});
+					searchIndex += query.length;
+				}
+			});
+
+			this.log(`Found ${this.searchMatches.length} matches for "${this.searchQuery}"`);
+
+			// Update UI and highlight matches
+			this.updateSearchUI();
+
+			// Redisplay subtitles with highlights
+			if (this.subtitles.length > 0) {
+				this.displaySubtitlesInView();
+			}
+
+			// Navigate to first match if any found
+			if (this.searchMatches.length > 0) {
+				this.currentMatchIndex = 0;
+				this.navigateToMatch(0);
+			}
+		} catch (error) {
+			this.logError("Error performing search", error);
+		}
+	}
+
+	highlightSearchMatches(subtitle, subtitleIndex) {
+		try {
+			if (!this.searchQuery || this.searchQuery.length === 0) {
+				return this.escapeHTML(subtitle);
+			}
+
+			const query = this.searchQuery.toLowerCase();
+			const subtitleLower = subtitle.toLowerCase();
+			let result = "";
+			let lastIndex = 0;
+			let searchIndex = 0;
+
+			// Find all matches and wrap them in highlight spans
+			while ((searchIndex = subtitleLower.indexOf(query, searchIndex)) !== -1) {
+				// Add text before match
+				result += this.escapeHTML(subtitle.substring(lastIndex, searchIndex));
+
+				// Add highlighted match
+				const matchText = subtitle.substring(searchIndex, searchIndex + query.length);
+				result += `<mark class="search-match" data-subtitle-index="${subtitleIndex}" data-match-index="${searchIndex}">${this.escapeHTML(
+					matchText
+				)}</mark>`;
+
+				lastIndex = searchIndex + query.length;
+				searchIndex = lastIndex;
+			}
+
+			// Add remaining text
+			result += this.escapeHTML(subtitle.substring(lastIndex));
+
+			return result;
+		} catch (error) {
+			this.logError("Error highlighting search matches", error);
+			return this.escapeHTML(subtitle);
+		}
+	}
+
+	navigateToMatch(direction) {
+		try {
+			if (this.searchMatches.length === 0) return;
+
+			// Calculate new match index
+			if (direction === 0) {
+				// Jump to specific index (used for initial navigation)
+				this.currentMatchIndex = 0;
+			} else {
+				// Navigate relative to current position
+				this.currentMatchIndex += direction;
+
+				// Wrap around
+				if (this.currentMatchIndex < 0) {
+					this.currentMatchIndex = this.searchMatches.length - 1;
+				} else if (this.currentMatchIndex >= this.searchMatches.length) {
+					this.currentMatchIndex = 0;
+				}
+			}
+
+			const match = this.searchMatches[this.currentMatchIndex];
+			if (!match) return;
+
+			// Update UI
+			this.updateSearchUI();
+
+			// Temporarily disable auto-scroll to active caption during search navigation
+			// This prevents the active caption magnetism from interfering with search scrolling
+			const wasUserScrolled = this.userScrolled;
+			this.userScrolled = true; // Prevent auto-scroll to active caption
+
+			// Scroll to the subtitle item containing this match
+			const subtitleItem = document.querySelector(`.subtitle-item[data-index="${match.subtitleIndex}"]`);
+			if (subtitleItem) {
+				// Remove previous active match highlight
+				document.querySelectorAll(".subtitle-item.search-match-active").forEach((el) => {
+					el.classList.remove("search-match-active");
+				});
+
+				// Add active match highlight
+				subtitleItem.classList.add("search-match-active");
+
+				// Scroll to the item
+				const subtitlesContent = document.getElementById("subtitles-content");
+				if (subtitlesContent) {
+					const containerRect = subtitlesContent.getBoundingClientRect();
+					const itemRect = subtitleItem.getBoundingClientRect();
+
+					// Calculate scroll position to center the item
+					const scrollTop = subtitlesContent.scrollTop + itemRect.top - containerRect.top - containerRect.height / 2 + itemRect.height / 2;
+
+					subtitlesContent.scrollTo({
+						top: Math.max(0, scrollTop),
+						behavior: "smooth",
+					});
+				}
+
+				// Note: We intentionally do NOT jump to the timestamp here
+				// Video playback should only change when the user explicitly clicks on a caption
+				// Search navigation should only scroll and highlight, not change playback
+			}
+
+			// Restore userScrolled state after a short delay to allow search scrolling to complete
+			setTimeout(() => {
+				// Only restore if search is still active, otherwise keep userScrolled as it was
+				if (this.searchQuery && this.searchMatches.length > 0) {
+					this.userScrolled = true; // Keep disabled during active search
+				} else {
+					this.userScrolled = wasUserScrolled; // Restore original state
+				}
+			}, 500);
+		} catch (error) {
+			this.logError("Error navigating to match", error);
+		}
+	}
+
+	updateSearchUI() {
+		try {
+			const searchNavigation = document.getElementById("search-navigation");
+			const searchMatchCount = document.getElementById("search-match-count");
+			const searchPrevBtn = document.getElementById("search-prev");
+			const searchNextBtn = document.getElementById("search-next");
+
+			if (!searchNavigation || !searchMatchCount || !searchPrevBtn || !searchNextBtn) return;
+
+			// Show navigation if there are matches - use setProperty with important to prevent hiding
+			if (this.searchMatches.length > 0) {
+				searchNavigation.style.setProperty("display", "flex", "important");
+				searchNavigation.style.setProperty("visibility", "visible", "important");
+				searchNavigation.style.setProperty("opacity", "1", "important");
+				const current = this.currentMatchIndex >= 0 ? this.currentMatchIndex + 1 : 0;
+				searchMatchCount.textContent = `${current}/${this.searchMatches.length}`;
+				searchPrevBtn.disabled = this.searchMatches.length <= 1;
+				searchNextBtn.disabled = this.searchMatches.length <= 1;
+			} else {
+				searchNavigation.style.display = "none";
+				searchMatchCount.textContent = "0/0";
+				searchPrevBtn.disabled = true;
+				searchNextBtn.disabled = true;
+			}
+		} catch (error) {
+			this.logError("Error updating search UI", error);
+		}
+	}
+
+	clearSearch() {
+		try {
+			const searchInput = document.getElementById("subtitle-search");
+			const searchClearBtn = document.getElementById("search-clear");
+			if (searchInput) {
+				searchInput.value = "";
+			}
+			if (searchClearBtn) {
+				searchClearBtn.style.display = "none";
+			}
+			this.searchQuery = "";
+			this.searchMatches = [];
+			this.currentMatchIndex = -1;
+			this.userScrolled = false; // Re-enable auto-scroll to active caption
+			this.updateSearchUI();
+
+			// Redisplay subtitles without highlights
+			if (this.subtitles.length > 0) {
+				this.displaySubtitlesInView();
+			}
+		} catch (error) {
+			this.logError("Error clearing search", error);
+		}
+	}
+
+	jumpToActiveCaptionAfterClear() {
+		try {
+			// Wait a moment for the DOM to update, then scroll to active caption (without changing playback)
+			setTimeout(() => {
+				if (this.currentActiveIndex >= 0) {
+					// Only scroll to the active caption in the subtitle list, do NOT change playback
+					const subtitleItem = document.querySelector(`.subtitle-item[data-index="${this.currentActiveIndex}"]`);
+					if (subtitleItem) {
+						const subtitlesContent = document.getElementById("subtitles-content");
+						if (subtitlesContent) {
+							const containerRect = subtitlesContent.getBoundingClientRect();
+							const itemRect = subtitleItem.getBoundingClientRect();
+
+							// Calculate scroll position to center the item
+							const scrollTop =
+								subtitlesContent.scrollTop + itemRect.top - containerRect.top - containerRect.height / 2 + itemRect.height / 2;
+
+							subtitlesContent.scrollTo({
+								top: Math.max(0, scrollTop),
+								behavior: "smooth",
+							});
+						}
+					}
+				}
+			}, 100);
+		} catch (error) {
+			this.logError("Error jumping to active caption after clear", error);
+		}
+	}
+
+	setupSummarySearchFunctionality() {
+		try {
+			const searchInput = document.getElementById("summary-search");
+			const searchClearBtn = document.getElementById("summary-search-clear");
+			const searchPrevBtn = document.getElementById("summary-search-prev");
+			const searchNextBtn = document.getElementById("summary-search-next");
+
+			if (!searchInput || !searchClearBtn || !searchPrevBtn || !searchNextBtn) return;
+
+			// Show/hide clear button based on input
+			const updateClearButton = () => {
+				if (searchInput.value.length > 0) {
+					searchClearBtn.style.display = "flex";
+				} else {
+					searchClearBtn.style.display = "none";
+				}
+			};
+
+			// Search input handler
+			searchInput.addEventListener("input", (e) => {
+				this.summarySearchQuery = e.target.value.trim();
+
+				updateClearButton();
+
+				if (this.summarySearchQuery.length > 0) {
+					this.performSummarySearch();
+				} else {
+					// Search was cleared - just remove highlights, don't change scroll position
+					this.clearSummarySearch();
+				}
+			});
+
+			// Clear button click handler
+			searchClearBtn.addEventListener("click", (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				searchInput.value = "";
+				this.summarySearchQuery = "";
+				updateClearButton();
+				this.clearSummarySearch();
+			});
+
+			// Keyboard shortcuts for search navigation
+			searchInput.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") {
+					e.preventDefault();
+					if (e.shiftKey) {
+						this.navigateToSummaryMatch(-1); // Shift+Enter = previous
+					} else {
+						this.navigateToSummaryMatch(1); // Enter = next
+					}
+				} else if (e.key === "ArrowUp") {
+					e.preventDefault();
+					this.navigateToSummaryMatch(-1);
+				} else if (e.key === "ArrowDown") {
+					e.preventDefault();
+					this.navigateToSummaryMatch(1);
+				} else if (e.key === "Escape") {
+					e.preventDefault();
+					searchInput.value = "";
+					this.summarySearchQuery = "";
+					updateClearButton();
+					this.clearSummarySearch();
+				}
+			});
+
+			// Navigation buttons
+			searchPrevBtn.addEventListener("click", () => {
+				this.navigateToSummaryMatch(-1);
+			});
+
+			searchNextBtn.addEventListener("click", () => {
+				this.navigateToSummaryMatch(1);
+			});
+		} catch (error) {
+			this.logError("Error setting up summary search functionality", error);
+		}
+	}
+
+	performSummarySearch() {
+		try {
+			this.summarySearchMatches = [];
+			this.currentSummaryMatchIndex = -1;
+
+			if (!this.summarySearchQuery || this.summarySearchQuery.length === 0) {
+				this.updateSummarySearchUI();
+				this.highlightSummaryMatches();
+				return;
+			}
+
+			const query = this.summarySearchQuery.toLowerCase();
+			const summaryContent = document.getElementById("summary-content");
+			if (!summaryContent) return;
+
+			// Helper function to extract plain text from an element, ignoring all HTML formatting
+			const getPlainText = (element) => {
+				if (!element) return "";
+				// Clone to avoid modifying original
+				const clone = element.cloneNode(true);
+				// Remove all mark elements (existing search highlights) to get clean text
+				clone.querySelectorAll("mark").forEach((mark) => {
+					const textNode = document.createTextNode(mark.textContent);
+					if (mark.parentNode) {
+						mark.parentNode.replaceChild(textNode, mark);
+					}
+				});
+				// Return plain text content (this strips all HTML tags)
+				return clone.textContent || clone.innerText || "";
+			};
+
+			// Get all block-level elements (excluding headers/titles) that contain text
+			const allElements = summaryContent.querySelectorAll("li, p, blockquote, code, pre");
+			const processedElements = new Set();
+
+			allElements.forEach((element, elementIndex) => {
+				// Skip if already processed (to avoid duplicates from nested elements)
+				if (processedElements.has(element)) return;
+
+				// Skip header elements (h1-h6) - titles are not searchable
+				if (element.tagName && /^H[1-6]$/.test(element.tagName)) return;
+
+				// Get plain text content, ignoring all formatting
+				const plainText = getPlainText(element);
+				if (!plainText || plainText.trim().length === 0) return;
+
+				const textLower = plainText.toLowerCase();
+				let searchIndex = 0;
+
+				// Find all occurrences of the query in this element's plain text
+				while ((searchIndex = textLower.indexOf(query, searchIndex)) !== -1) {
+					// Find the text node that contains this match
+					const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+
+					let textNode;
+					let currentIndex = 0;
+					let foundNode = null;
+					let targetIndex = searchIndex;
+
+					// Find which text node contains the match
+					while ((textNode = walker.nextNode())) {
+						const nodeText = textNode.textContent || "";
+						const nodeLength = nodeText.length;
+
+						if (targetIndex < currentIndex + nodeLength) {
+							foundNode = textNode;
+							break;
+						}
+						currentIndex += nodeLength;
+					}
+
+					// If we couldn't find the exact node, use the first text node in the element
+					if (!foundNode) {
+						const walker2 = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+						foundNode = walker2.nextNode();
+					}
+
+					if (foundNode) {
+						// Check if the match is within a header element - exclude from count
+						let parentElement = foundNode.parentElement;
+						let isInHeader = false;
+						while (parentElement && parentElement !== summaryContent) {
+							if (parentElement.tagName && /^H[1-6]$/.test(parentElement.tagName)) {
+								isInHeader = true;
+								break;
+							}
+							parentElement = parentElement.parentElement;
+						}
+
+						// Only add to matches if not in a header
+						if (!isInHeader) {
+							this.summarySearchMatches.push({
+								elementIndex: elementIndex,
+								node: foundNode,
+								matchIndex: searchIndex,
+								text: plainText.substring(searchIndex, searchIndex + query.length),
+							});
+						}
+					}
+
+					searchIndex += query.length;
+				}
+
+				// Mark this element as processed
+				processedElements.add(element);
+			});
+
+			this.log(`Found ${this.summarySearchMatches.length} matches in summary for "${this.summarySearchQuery}"`);
+
+			// Update UI and highlight matches
+			this.updateSummarySearchUI();
+			this.highlightSummaryMatches();
+
+			// Navigate to first match if any found
+			if (this.summarySearchMatches.length > 0) {
+				this.currentSummaryMatchIndex = 0;
+				this.navigateToSummaryMatch(0);
+			}
+		} catch (error) {
+			this.logError("Error performing summary search", error);
+		}
+	}
+
+	highlightSummaryMatches() {
+		try {
+			const summaryContent = document.getElementById("summary-content");
+			if (!summaryContent) return;
+
+			// Remove existing highlights
+			summaryContent.querySelectorAll("mark.summary-search-match").forEach((mark) => {
+				const parent = mark.parentNode;
+				parent.replaceChild(document.createTextNode(mark.textContent), mark);
+				parent.normalize();
+			});
+
+			if (!this.summarySearchQuery || this.summarySearchQuery.length === 0) {
+				return;
+			}
+
+			const query = this.summarySearchQuery.toLowerCase();
+
+			// Helper function to extract plain text from an element, ignoring all HTML formatting
+			const getPlainText = (element) => {
+				if (!element) return "";
+				const clone = element.cloneNode(true);
+				clone.querySelectorAll("mark").forEach((mark) => {
+					const textNode = document.createTextNode(mark.textContent);
+					if (mark.parentNode) {
+						mark.parentNode.replaceChild(textNode, mark);
+					}
+				});
+				return clone.textContent || clone.innerText || "";
+			};
+
+			// Process each element that might contain matches (excluding headers/titles)
+			const allElements = summaryContent.querySelectorAll("li, p, blockquote, code, pre");
+
+			// Process elements in reverse to avoid index issues
+			Array.from(allElements)
+				.reverse()
+				.forEach((element) => {
+					// Skip header elements (h1-h6) - titles are not searchable
+					if (element.tagName && /^H[1-6]$/.test(element.tagName)) return;
+
+					const plainText = getPlainText(element);
+					if (!plainText || !plainText.toLowerCase().includes(query)) return;
+
+					// Find all matches in the plain text
+					const textLower = plainText.toLowerCase();
+					let searchIndex = 0;
+					const matches = [];
+					while ((searchIndex = textLower.indexOf(query, searchIndex)) !== -1) {
+						matches.push({ start: searchIndex, end: searchIndex + query.length });
+						searchIndex += query.length;
+					}
+
+					// Build a map of text nodes with their offsets
+					const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+					let node;
+					let currentOffset = 0;
+					const textNodes = [];
+
+					while ((node = walker.nextNode())) {
+						const nodeText = node.textContent || "";
+						const nodeLength = nodeText.length;
+						textNodes.push({
+							node,
+							start: currentOffset,
+							end: currentOffset + nodeLength,
+							text: nodeText,
+						});
+						currentOffset += nodeLength;
+					}
+
+					// Process matches in reverse order
+					matches.reverse().forEach((match) => {
+						// Find all text nodes that intersect with this match
+						const intersectingNodes = textNodes.filter((tn) => tn.start < match.end && tn.end > match.start);
+
+						if (intersectingNodes.length === 0) return;
+
+						// If match is entirely within one text node
+						if (intersectingNodes.length === 1) {
+							const tn = intersectingNodes[0];
+							const relativeStart = match.start - tn.start;
+							const relativeEnd = match.end - tn.start;
+							const parent = tn.node.parentNode;
+							if (!parent) return;
+
+							const nodeText = tn.text;
+							const fragments = [];
+
+							// For headers, ensure no extra whitespace is introduced
+							if (element.tagName && /^H[1-6]$/.test(element.tagName)) {
+								// Add text before match
+								if (relativeStart > 0) {
+									const beforeText = nodeText.substring(0, relativeStart);
+									fragments.push(document.createTextNode(beforeText));
+								}
+
+								// Create mark element with exact match text
+								const mark = document.createElement("mark");
+								mark.className = "summary-search-match";
+								const matchText = nodeText.substring(relativeStart, relativeEnd);
+								mark.textContent = matchText;
+								fragments.push(mark);
+
+								// Add text after match
+								if (relativeEnd < nodeText.length) {
+									const afterText = nodeText.substring(relativeEnd);
+									fragments.push(document.createTextNode(afterText));
+								}
+
+								// Replace the text node
+								if (fragments.length > 0) {
+									const fragment = document.createDocumentFragment();
+									fragments.forEach((f) => fragment.appendChild(f));
+									parent.replaceChild(fragment, tn.node);
+									// Normalize to remove any extra whitespace nodes
+									parent.normalize();
+								}
+							} else {
+								// Add text before match
+								if (relativeStart > 0) {
+									fragments.push(document.createTextNode(nodeText.substring(0, relativeStart)));
+								}
+
+								// Create mark element and preserve formatting by cloning the relevant portion
+								const mark = document.createElement("mark");
+								mark.className = "summary-search-match";
+
+								// Get the portion of the element that contains this match
+								const range = document.createRange();
+								range.setStart(tn.node, relativeStart);
+								range.setEnd(tn.node, relativeEnd);
+								// Clone the contents including formatting for non-headers
+								const contents = range.cloneContents();
+								mark.appendChild(contents);
+
+								fragments.push(mark);
+
+								// Add text after match
+								if (relativeEnd < nodeText.length) {
+									fragments.push(document.createTextNode(nodeText.substring(relativeEnd)));
+								}
+
+								// Replace the text node
+								if (fragments.length > 0) {
+									const fragment = document.createDocumentFragment();
+									fragments.forEach((f) => fragment.appendChild(f));
+									parent.replaceChild(fragment, tn.node);
+								}
+							}
+						} else {
+							// Match spans multiple text nodes - need to wrap the entire range
+							const firstNode = intersectingNodes[0];
+							const lastNode = intersectingNodes[intersectingNodes.length - 1];
+
+							// Create a range that spans the entire match
+							const range = document.createRange();
+							const firstRelativeStart = match.start - firstNode.start;
+							const lastRelativeEnd = match.end - lastNode.start;
+
+							range.setStart(firstNode.node, firstRelativeStart);
+							range.setEnd(lastNode.node, lastRelativeEnd);
+
+							// Create mark element and wrap the entire range
+							const mark = document.createElement("mark");
+							mark.className = "summary-search-match";
+
+							// For headers, manually extract text to avoid whitespace issues
+							if (element.tagName && /^H[1-6]$/.test(element.tagName)) {
+								// Manually extract text from intersecting nodes to avoid whitespace
+								let matchText = "";
+								intersectingNodes.forEach((tn, idx) => {
+									if (idx === 0) {
+										// First node: from relativeStart to end
+										matchText += tn.text.substring(firstRelativeStart);
+									} else if (idx === intersectingNodes.length - 1) {
+										// Last node: from start to lastRelativeEnd
+										matchText += tn.text.substring(0, lastRelativeEnd);
+									} else {
+										// Middle nodes: entire text
+										matchText += tn.text;
+									}
+								});
+
+								mark.textContent = matchText;
+								// Replace the range with the mark
+								range.deleteContents();
+								range.insertNode(mark);
+								// Normalize to remove any extra whitespace nodes
+								element.normalize();
+							} else {
+								// Clone the contents including all formatting for non-headers
+								const contents = range.cloneContents();
+								mark.appendChild(contents);
+								// Replace the range with the mark
+								range.deleteContents();
+								range.insertNode(mark);
+							}
+						}
+					});
+				});
+		} catch (error) {
+			this.logError("Error highlighting summary matches", error);
+		}
+	}
+
+	navigateToSummaryMatch(direction) {
+		try {
+			if (this.summarySearchMatches.length === 0) return;
+
+			// Calculate new match index
+			if (direction === 0) {
+				// Jump to specific index (used for initial navigation)
+				this.currentSummaryMatchIndex = 0;
+			} else {
+				// Navigate relative to current position
+				this.currentSummaryMatchIndex += direction;
+
+				// Wrap around
+				if (this.currentSummaryMatchIndex < 0) {
+					this.currentSummaryMatchIndex = this.summarySearchMatches.length - 1;
+				} else if (this.currentSummaryMatchIndex >= this.summarySearchMatches.length) {
+					this.currentSummaryMatchIndex = 0;
+				}
+			}
+
+			const match = this.summarySearchMatches[this.currentSummaryMatchIndex];
+			if (!match || !match.node) return;
+
+			// Update UI
+			this.updateSummarySearchUI();
+
+			// Remove previous active match highlight
+			document.querySelectorAll("mark.summary-search-match-active").forEach((el) => {
+				el.classList.remove("summary-search-match-active");
+			});
+
+			// Find the mark element for this match
+			const summaryContent = document.getElementById("summary-content");
+			if (!summaryContent) return;
+
+			// Get all mark elements
+			const marks = summaryContent.querySelectorAll("mark.summary-search-match");
+			if (marks.length > this.currentSummaryMatchIndex) {
+				const activeMark = marks[this.currentSummaryMatchIndex];
+				activeMark.classList.add("summary-search-match-active");
+
+				// Scroll to the mark element
+				const containerRect = summaryContent.getBoundingClientRect();
+				const markRect = activeMark.getBoundingClientRect();
+
+				// Calculate scroll position to center the mark
+				const scrollTop = summaryContent.scrollTop + markRect.top - containerRect.top - containerRect.height / 2 + markRect.height / 2;
+
+				summaryContent.scrollTo({
+					top: Math.max(0, scrollTop),
+					behavior: "smooth",
+				});
+			}
+		} catch (error) {
+			this.logError("Error navigating to summary match", error);
+		}
+	}
+
+	updateSummarySearchUI() {
+		try {
+			const searchNavigation = document.getElementById("summary-search-navigation");
+			const searchMatchCount = document.getElementById("summary-search-match-count");
+			const searchPrevBtn = document.getElementById("summary-search-prev");
+			const searchNextBtn = document.getElementById("summary-search-next");
+
+			if (!searchNavigation || !searchMatchCount || !searchPrevBtn || !searchNextBtn) return;
+
+			// Show navigation if there are matches - always use !important to prevent hiding
+			if (this.summarySearchMatches.length > 0) {
+				searchNavigation.style.setProperty("display", "flex", "important");
+				searchNavigation.style.setProperty("visibility", "visible", "important");
+				searchNavigation.style.setProperty("opacity", "1", "important");
+				const current = this.currentSummaryMatchIndex >= 0 ? this.currentSummaryMatchIndex + 1 : 0;
+				searchMatchCount.textContent = `${current}/${this.summarySearchMatches.length}`;
+				searchPrevBtn.disabled = this.summarySearchMatches.length <= 1;
+				searchNextBtn.disabled = this.summarySearchMatches.length <= 1;
+			} else {
+				searchNavigation.style.display = "none";
+				searchMatchCount.textContent = "0/0";
+				searchPrevBtn.disabled = true;
+				searchNextBtn.disabled = true;
+			}
+		} catch (error) {
+			this.logError("Error updating summary search UI", error);
+		}
+	}
+
+	clearSummarySearch() {
+		try {
+			const searchInput = document.getElementById("summary-search");
+			const searchClearBtn = document.getElementById("summary-search-clear");
+			if (searchInput) {
+				searchInput.value = "";
+			}
+			if (searchClearBtn) {
+				searchClearBtn.style.display = "none";
+			}
+			this.summarySearchQuery = "";
+			this.summarySearchMatches = [];
+			this.currentSummaryMatchIndex = -1;
+			this.updateSummarySearchUI();
+
+			// Remove highlights but keep scroll position
+			this.highlightSummaryMatches();
+		} catch (error) {
+			this.logError("Error clearing summary search", error);
+		}
+	}
+
+	setupCopyButtons() {
+		try {
+			// Copy captions button
+			const copyCaptionsBtn = document.getElementById("copy-captions-btn");
+			if (copyCaptionsBtn) {
+				copyCaptionsBtn.addEventListener("click", () => {
+					this.copyCaptions();
+				});
+			}
+
+			// Copy summary button
+			const copySummaryBtn = document.getElementById("copy-summary-btn");
+			if (copySummaryBtn) {
+				copySummaryBtn.addEventListener("click", () => {
+					this.copySummary();
+				});
+			}
+		} catch (error) {
+			this.logError("Error setting up copy buttons", error);
+		}
+	}
+
+	async copyCaptions() {
+		try {
+			if (!this.subtitles || this.subtitles.length === 0) {
+				this.log("No captions to copy");
+				return;
+			}
+
+			// Get all caption text with timestamps
+			const captionsText = this.subtitles
+				.map((subtitle, index) => {
+					const timing = this.subtitleTimings[index];
+					if (timing) {
+						const timeStr = this.formatTimestamp(timing.start);
+						return `[${timeStr}] ${subtitle}`;
+					}
+					return subtitle;
+				})
+				.join("\n");
+
+			// Copy to clipboard
+			await navigator.clipboard.writeText(captionsText);
+
+			// Show visual feedback
+			const copyBtn = document.getElementById("copy-captions-btn");
+			if (copyBtn) {
+				const originalHTML = copyBtn.innerHTML;
+				copyBtn.innerHTML = `
+					<svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<path d="M20 6L9 17l-5-5"/>
+					</svg>
+				`;
+				copyBtn.style.color = "var(--accent-primary)";
+				setTimeout(() => {
+					copyBtn.innerHTML = originalHTML;
+					copyBtn.style.color = "";
+				}, 2000);
+			}
+		} catch (error) {
+			this.logError("Error copying captions", error);
+			// Fallback for older browsers
+			try {
+				const textArea = document.createElement("textarea");
+				textArea.value = this.subtitles
+					.map((subtitle, index) => {
+						const timing = this.subtitleTimings[index];
+						if (timing) {
+							const timeStr = this.formatTimestamp(timing.start);
+							return `[${timeStr}] ${subtitle}`;
+						}
+						return subtitle;
+					})
+					.join("\n");
+				textArea.style.position = "fixed";
+				textArea.style.opacity = "0";
+				document.body.appendChild(textArea);
+				textArea.select();
+				document.execCommand("copy");
+				document.body.removeChild(textArea);
+			} catch (fallbackError) {
+				this.logError("Fallback copy failed", fallbackError);
+			}
+		}
+	}
+
+	async copySummary() {
+		try {
+			if (!this.summary) {
+				this.log("No summary to copy");
+				return;
+			}
+
+			// Get summary text content (strip HTML tags)
+			const summaryContent = document.getElementById("summary-content");
+			if (!summaryContent) {
+				this.log("Summary content element not found");
+				return;
+			}
+
+			// Get text content from the summary, preserving structure
+			const summaryText = summaryContent.innerText || summaryContent.textContent || "";
+
+			if (!summaryText.trim()) {
+				this.log("Summary text is empty");
+				return;
+			}
+
+			// Copy to clipboard
+			await navigator.clipboard.writeText(summaryText);
+
+			// Show visual feedback
+			const copyBtn = document.getElementById("copy-summary-btn");
+			if (copyBtn) {
+				const originalHTML = copyBtn.innerHTML;
+				copyBtn.innerHTML = `
+					<svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<path d="M20 6L9 17l-5-5"/>
+					</svg>
+				`;
+				copyBtn.style.color = "var(--accent-primary)";
+				setTimeout(() => {
+					copyBtn.innerHTML = originalHTML;
+					copyBtn.style.color = "";
+				}, 2000);
+			}
+		} catch (error) {
+			this.logError("Error copying summary", error);
+			// Fallback for older browsers
+			try {
+				const summaryContent = document.getElementById("summary-content");
+				if (summaryContent) {
+					const textArea = document.createElement("textarea");
+					textArea.value = summaryContent.innerText || summaryContent.textContent || "";
+					textArea.style.position = "fixed";
+					textArea.style.opacity = "0";
+					document.body.appendChild(textArea);
+					textArea.select();
+					document.execCommand("copy");
+					document.body.removeChild(textArea);
+				}
+			} catch (fallbackError) {
+				this.logError("Fallback copy failed", fallbackError);
+			}
 		}
 	}
 
@@ -1866,7 +3961,7 @@ Final formatting rules for your output:
 		try {
 			// Prevent duplicate submissions
 			if (this.querySubmitting) {
-				console.log("Query already being submitted, ignoring duplicate request");
+				this.log("Query already being submitted, ignoring duplicate request");
 				return;
 			}
 
@@ -1885,8 +3980,7 @@ Final formatting rules for your output:
 			// Show loading state with spinner
 			submitBtn.disabled = true;
 			submitBtn.innerHTML = `
-				<span class="query-spinner"></span>
-				<span>Asking...</span>
+				<span class="submit-btn-spinner"></span>
 			`;
 			queryInput.disabled = true;
 
@@ -1908,12 +4002,9 @@ Final formatting rules for your output:
 			// Reset button state
 			submitBtn.disabled = false;
 			submitBtn.innerHTML = `
-				<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor">
-					<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2 2z"/>
-					<path d="M13 8H7"/>
-					<path d="M17 12H7"/>
+				<svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M14 11L12 9M12 9L10 11M12 9V15M21.0039 12C21.0039 16.9706 16.9745 21 12.0039 21C9.9675 21 3.00463 21 3.00463 21C3.00463 21 4.56382 17.2561 3.93982 16.0008C3.34076 14.7956 3.00391 13.4372 3.00391 12C3.00391 7.02944 7.03334 3 12.0039 3C16.9745 3 21.0039 7.02944 21.0039 12Z"/>
 				</svg>
-				<span>Ask</span>
 			`;
 			queryInput.disabled = false;
 			queryInput.value = "";
@@ -1922,7 +4013,30 @@ Final formatting rules for your output:
 			queryInput.blur();
 			queryInput.focus();
 		} catch (error) {
-			console.error("Error submitting query:", error);
+			this.logError("Error submitting query", error);
+
+			// Check for extension context invalidated error
+			if (
+				error.isContextInvalidated ||
+				(error.message && (error.message.includes("Extension context invalidated") || error.message.includes("Extension was reloaded")))
+			) {
+				this.showError("Extension was reloaded. Please refresh the page and try again.", true);
+			} else {
+				const summaryContent = document.getElementById("summary-content");
+				if (summaryContent) {
+					const querySection = summaryContent.querySelector(".query-section:last-child");
+					if (querySection) {
+						const answerDiv = querySection.querySelector(".query-answer");
+						if (answerDiv) {
+							answerDiv.innerHTML = `
+								<div class="query-error">
+									<p>❌ ${this.escapeHTML(error.message || "Failed to process query")}</p>
+								</div>
+							`;
+						}
+					}
+				}
+			}
 
 			// Reset button state on error
 			const submitBtn = document.getElementById("submit-query-btn");
@@ -1930,12 +4044,9 @@ Final formatting rules for your output:
 			if (submitBtn) {
 				submitBtn.disabled = false;
 				submitBtn.innerHTML = `
-					<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor">
-						<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-						<path d="M13 8H7"/>
-						<path d="M17 12H7"/>
+					<svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M14 11L12 9M12 9L10 11M12 9V15M21.0039 12C21.0039 16.9706 16.9745 21 12.0039 21C9.9675 21 3.00463 21 3.00463 21C3.00463 21 4.56382 17.2561 3.93982 16.0008C3.34076 14.7956 3.00391 13.4372 3.00391 12C3.00391 7.02944 7.03334 3 12.0039 3C16.9745 3 21.0039 7.02944 21.0039 12Z"/>
 					</svg>
-					<span>Ask</span>
 				`;
 			}
 			if (queryInput) {
@@ -1984,7 +4095,7 @@ Final formatting rules for your output:
 			}
 			return result;
 		} catch (e) {
-			console.error("Error building relevant subtitle context:", e);
+			this.logError("Error building relevant subtitle context", e);
 			return "";
 		}
 	}
@@ -2003,29 +4114,54 @@ Final formatting rules for your output:
 					<div class="query-divider"></div>
 					<div class="query-section">
 						<div class="query-question">
-							<h4>Question:</h4>
-							<p>${question}</p>
+							<div class="query-question-text">${this.escapeHTML(question)}</div>
 						</div>
 						<div class="query-pending">
+							<div class="query-pending-content">
 							<div class="query-spinner"></div>
-							<p>Getting answer...</p>
+								<p class="query-pending-text">Getting answer<span class="query-pending-counter"></span>...</p>
+							</div>
 						</div>
 					</div>
 				`;
 
 				// Add to the end of summary content
 				summaryContent.insertAdjacentHTML("beforeend", queryHTML);
+
+				// Scroll to show the question container
+				setTimeout(() => {
+					const querySection = summaryContent.querySelector(".query-section:last-child");
+					if (querySection) {
+						const questionElement = querySection.querySelector(".query-question");
+						if (questionElement) {
+							const containerRect = summaryContent.getBoundingClientRect();
+							const questionRect = questionElement.getBoundingClientRect();
+							const scrollTop =
+								summaryContent.scrollTop +
+								questionRect.top -
+								containerRect.top -
+								containerRect.height / 2 +
+								questionRect.height / 2;
+							const maxScrollTop = summaryContent.scrollHeight - summaryContent.clientHeight;
+							const finalScrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
+							summaryContent.scrollTo({
+								top: finalScrollTop,
+								behavior: "smooth",
+							});
+						}
+					}
+				}, 100);
 			} else {
 				// Update existing pending section or create new one
 				if (existingPendingSection) {
-					// Replace the pending section with the answer
+					// Store reference to query section and question before replacing
 					const querySection = existingPendingSection.closest(".query-section");
-					const questionElement = querySection.querySelector(".query-question");
+					const questionElement = querySection ? querySection.querySelector(".query-question") : null;
 
 					if (isError) {
 						existingPendingSection.outerHTML = `
 							<div class="query-error">
-								<p>${answer}</p>
+								<p>${this.escapeHTML(answer)}</p>
 							</div>
 						`;
 					} else {
@@ -2033,12 +4169,32 @@ Final formatting rules for your output:
 						const formattedAnswer = this.formatQueryAnswer(answer);
 						existingPendingSection.outerHTML = `
 							<div class="query-answer">
-								<h4>Answer:</h4>
 								<div class="summary-text">
 									${formattedAnswer}
 								</div>
 							</div>
 						`;
+					}
+
+					// Scroll so the question is at the top of the view
+					if (querySection) {
+						setTimeout(() => {
+							// Re-query to ensure element still exists after DOM update
+							const updatedQuerySection = summaryContent.querySelector(".query-section:last-child");
+							const updatedQuestionElement = updatedQuerySection ? updatedQuerySection.querySelector(".query-question") : null;
+							if (updatedQuestionElement) {
+								const containerRect = summaryContent.getBoundingClientRect();
+								const questionRect = updatedQuestionElement.getBoundingClientRect();
+								// Calculate scroll position to put question at the top
+								const scrollTop = summaryContent.scrollTop + questionRect.top - containerRect.top;
+								const maxScrollTop = summaryContent.scrollHeight - summaryContent.clientHeight;
+								const finalScrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
+								summaryContent.scrollTo({
+									top: finalScrollTop,
+									behavior: "smooth",
+								});
+							}
+						}, 100);
 					}
 				} else {
 					// Create new section if no pending section exists
@@ -2046,72 +4202,188 @@ Final formatting rules for your output:
 						<div class="query-divider"></div>
 						<div class="query-section">
 							<div class="query-question">
-								<h4>Question:</h4>
-								<p>${question}</p>
+								<div class="query-question-text">${this.escapeHTML(question)}</div>
 							</div>
 							${
 								isError
-									? `<div class="query-error"><p>${answer}</p></div>`
+									? `<div class="query-error"><p>${this.escapeHTML(answer)}</p></div>`
 									: `<div class="query-answer">
-									<h4>Answer:</h4>
 									<div class="summary-text">${this.formatQueryAnswer(answer)}</div>
 								</div>`
 							}
 						</div>
 					`;
 					summaryContent.insertAdjacentHTML("beforeend", queryHTML);
+
+					// Scroll so the question is at the top of the view
+					setTimeout(() => {
+						const querySection = summaryContent.querySelector(".query-section:last-child");
+						if (querySection && querySection.querySelector(".query-question")) {
+							const questionElement = querySection.querySelector(".query-question");
+							const containerRect = summaryContent.getBoundingClientRect();
+							const questionRect = questionElement.getBoundingClientRect();
+							// Calculate scroll position to put question at the top
+							const scrollTop = summaryContent.scrollTop + questionRect.top - containerRect.top;
+							const maxScrollTop = summaryContent.scrollHeight - summaryContent.clientHeight;
+							const finalScrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
+							summaryContent.scrollTo({
+								top: finalScrollTop,
+								behavior: "smooth",
+							});
+						}
+					}, 100);
 				}
 			}
 		} catch (error) {
-			console.error("Error adding query to view:", error);
+			this.logError("Error adding query to view", error);
 		}
 	}
 
 	formatQueryAnswer(answer) {
 		try {
-			// Convert the answer to proper HTML structure with headers, numbered bullets, and bold text
-			let formatted = answer
-				// Convert ## headers to h2
-				.replace(/^##\s+(.+)$/gm, "<h2>$1</h2>")
-				// Convert **bold text** to <strong>
-				.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-				// Convert *italic text* to <em>
-				.replace(/\*(.+?)\*/g, "<em>$1</em>")
-				// Convert • bullet points to proper list items
-				.replace(/^•\s+(.+)$/gm, "<li>$1</li>")
-				// Convert numbered bullets (1., 2., 3.) to ordered list items
-				.replace(/^(\d+)\.\s+(.+)$/gm, "<li>$2</li>")
-				// Wrap consecutive list items in ul tags (for bullet points)
-				.replace(/(<li>.*<\/li>)/gs, "<ul>$1</ul>")
-				// Clean up multiple ul tags
-				.replace(/<\/ul>\s*<ul>/g, "")
-				// Convert paragraphs (double line breaks)
-				.replace(/\n\n/g, "</p><p>")
-				// Wrap in paragraph tags
-				.replace(/^(.+)$/gm, "<p>$1</p>")
-				// Clean up empty paragraphs
-				.replace(/<p><\/p>/g, "")
-				// Clean up consecutive paragraph tags
-				.replace(/<\/p><p>/g, "</p>\n<p>");
+			// Clean up malformed input first
+			// Remove standalone asterisks
+			answer = answer.replace(/^\*\s*$/gm, "");
+
+			// Fix headers wrapped in asterisks: * **Header** * -> ## Header
+			answer = answer.replace(/^\*\s*\*\*(.+?)\*\*\s*\*$/gm, "## $1");
+
+			// Fix headers with asterisks: * **Header** -> ## Header
+			answer = answer.replace(/^\*\s*\*\*(.+?)\*\*\s*$/gm, "## $1");
+
+			// Use the same formatting logic as formatSummaryContent for consistency
+			// Split into lines for processing
+			const lines = answer.split("\n");
+			let formatted = "";
+			let inList = false;
+
+			for (let i = 0; i < lines.length; i++) {
+				let line = lines[i].trim();
+
+				// Skip empty lines
+				if (!line) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					continue;
+				}
+
+				// Convert headers (supporting ##, ###, ####, #####)
+				if (line.match(/^##\s+(.+)$/)) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += line.replace(/^##\s+(.+)$/, "<h1>$1</h1>") + "\n";
+				} else if (line.match(/^###\s+(.+)$/)) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += line.replace(/^###\s+(.+)$/, "<h2>$1</h2>") + "\n";
+				} else if (line.match(/^####\s+(.+)$/)) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += line.replace(/^####\s+(.+)$/, "<h3>$1</h3>") + "\n";
+				} else if (line.match(/^#####\s+(.+)$/)) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += line.replace(/^#####\s+(.+)$/, "<h4>$1</h4>") + "\n";
+				} else if (line.match(/^[•\-\*]\s+(.+)$/) || line.startsWith("•") || line.startsWith("-") || line.startsWith("*")) {
+					// Bullet point - convert to <li>
+					if (!inList) {
+						formatted += "<ul>\n";
+						inList = true;
+					}
+					// Remove bullet character and any leading whitespace
+					let bulletContent = line.replace(/^[•\-\*]\s*/, "").trim();
+
+					// Handle timestamps at the start: "0:00 content" -> "content [0:00]"
+					// Match patterns like "0:00", "0:36", "1:06", "2:04", "3:18", "6:01", "1:23:45", etc.
+					// Only process if timestamp is not already in brackets
+					if (!bulletContent.match(/\[.*\]/)) {
+						const timestampMatch = bulletContent.match(/^(\d{1,2}:\d{2}(?::\d{2})?)\s+(.+)$/);
+						if (timestampMatch) {
+							const timestamp = timestampMatch[1];
+							const content = timestampMatch[2];
+							// Format timestamp as [MM:SS] or [HH:MM:SS]
+							bulletContent = `${content} [${timestamp}]`;
+						}
+					}
+
+					formatted += `<li>${bulletContent}</li>\n`;
+				} else {
+					// Regular paragraph
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += `<p>${line}</p>\n`;
+				}
+			}
+
+			// Close any open list
+			if (inList) {
+				formatted += "</ul>\n";
+			}
+
+			// Convert **bold text** to <strong>
+			formatted = formatted.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+			// Convert *italic text* to <em> (but not bullet points)
+			formatted = formatted.replace(/(?<!^[•\-\*]\s)\*(.+?)\*/g, "<em>$1</em>");
+
+			// If no headers were found, treat the first line as a main header
+			if (!formatted.includes("<h1>") && !formatted.includes("<h2>") && !formatted.includes("<h3>") && !formatted.includes("<h4>")) {
+				const lines = answer.split("\n");
+				if (lines.length > 0) {
+					const firstLine = lines[0].trim();
+					const remainingContent = lines.slice(1).join("\n").trim();
+
+					formatted = `<h1>${firstLine}</h1>`;
+					if (remainingContent) {
+						formatted += `<p>${remainingContent}</p>`;
+					}
+				}
+			}
 
 			// Convert timestamps to clickable elements
 			formatted = this.convertTimestampsToClickable(formatted);
 
-			// Remove [N/A] tags if the model used them for bullets with no applicable timestamp
+			// Remove [N/A] tags and any messages about missing timestamps
 			formatted = formatted.replace(/\[N\/A\]\s*/gi, "");
+			formatted = formatted.replace(/\(\s*Not mentioned in the available timestamps\.?\s*\)/gi, "");
+			formatted = formatted.replace(/\(\s*no direct timestamp.*?\)/gi, "");
+			formatted = formatted.replace(/\(\s*no timestamp.*?\)/gi, "");
+			formatted = formatted.replace(/\(\s*timestamp.*?not available.*?\)/gi, "");
+			formatted = formatted.replace(/\(\s*timestamp.*?not found.*?\)/gi, "");
+			formatted = formatted.replace(/no direct timestamp.*?available/gi, "");
+			formatted = formatted.replace(/no timestamp.*?available/gi, "");
+			formatted = formatted.replace(/timestamp.*?not available/gi, "");
+			formatted = formatted.replace(/timestamp.*?not found/gi, "");
+			// Remove standalone phrases about missing timestamps
+			formatted = formatted.replace(/,\s*no direct timestamp.*?\./gi, ".");
+			formatted = formatted.replace(/,\s*no timestamp.*?\./gi, ".");
+			formatted = formatted.replace(/\.\s*No direct timestamp.*?\./gi, ".");
+			formatted = formatted.replace(/\.\s*No timestamp.*?\./gi, ".");
 
 			// Sanitize to avoid XSS
 			formatted = this.sanitizeHTML(formatted);
 
-			// Setup click listeners for the new timestamp buttons
+			// Setup click listeners for the new timestamp buttons and summary bullets
 			setTimeout(() => {
 				this.setupTimestampClickListeners();
+				this.setupSummaryBulletClickListeners();
 			}, 100);
 
 			return formatted;
 		} catch (error) {
-			console.error("Error formatting query answer:", error);
-			return `<p>${answer}</p>`;
+			this.logError("Error formatting query answer", error);
+			return `<p>${this.escapeHTML(answer)}</p>`;
 		}
 	}
 
@@ -2165,10 +4437,10 @@ Final formatting rules for your output:
 				}
 			}
 
-			console.log(`Extracted ${keyTimestamps.length} timestamps from ${totalSubtitles} subtitles`);
+			this.log(`Extracted ${keyTimestamps.length} timestamps from ${totalSubtitles} subtitles`);
 			return keyTimestamps;
 		} catch (error) {
-			console.error("Error extracting key timestamps:", error);
+			this.logError("Error extracting key timestamps", error);
 			return [];
 		}
 	}
@@ -2176,9 +4448,64 @@ Final formatting rules for your output:
 	// Convert timestamps in text to clickable elements
 	convertTimestampsToClickable(text) {
 		try {
-			// Match [MM:SS] or [HH:MM:SS]
+			// First, handle multiple timestamps in format [21:54, 24:34]
+			// Match patterns like [MM:SS, MM:SS] or [HH:MM:SS, HH:MM:SS] - must have at least one comma
+			const multipleTimestampRegex = /\[((?:\d{1,2}:)?\d{1,2}:\d{2}(?:,\s*(?:\d{1,2}:)?\d{1,2}:\d{2})+)\]/g;
+			text = text.replace(multipleTimestampRegex, (match, timestampsStr) => {
+				const timestamps = timestampsStr.split(",").map((ts) => ts.trim());
+				const timestampSeconds = [];
+				const formattedTimestamps = [];
+
+				for (const timestamp of timestamps) {
+					const parts = timestamp.split(":").map((p) => parseInt(p, 10));
+					let totalSeconds = 0;
+					if (parts.length === 2) {
+						const [m, s] = parts;
+						totalSeconds = m * 60 + s;
+					} else if (parts.length === 3) {
+						const [h, m, s] = parts;
+						totalSeconds = h * 3600 + m * 60 + s;
+					}
+
+					if (this.videoElement && Number.isFinite(this.videoElement.duration) && totalSeconds > this.videoElement.duration) {
+						continue;
+					}
+
+					timestampSeconds.push(totalSeconds);
+					formattedTimestamps.push(this.formatTimestamp(totalSeconds));
+				}
+
+				if (timestampSeconds.length === 0) {
+					return match;
+				}
+
+				// Sort timestamps chronologically
+				const sortedPairs = timestampSeconds
+					.map((seconds, index) => ({
+						seconds,
+						formatted: formattedTimestamps[index],
+					}))
+					.sort((a, b) => a.seconds - b.seconds);
+
+				// Store all timestamps as a data attribute on a wrapper
+				const timestampsData = sortedPairs.map((p) => p.seconds).join(",");
+
+				// Create separate clickable elements for each timestamp, wrapped in a container
+				const timestampElements = sortedPairs
+					.map((p) => `<span class="clickable-timestamp" data-time="${p.seconds}">${this.escapeHTML(p.formatted)}</span>`)
+					.join(", ");
+
+				return `<span class="multiple-timestamps-wrapper" data-timestamps="${timestampsData}">${timestampElements}</span>`;
+			});
+
+			// Then handle single timestamps [MM:SS] or [HH:MM:SS]
+			// Only match if not already inside a clickable-timestamp span (which would have been created above)
 			const timestampRegex = /\[(\d{1,2}:)?(\d{1,2}):(\d{2})\]/g;
 			return text.replace(timestampRegex, (match) => {
+				// Skip if this is already inside a clickable-timestamp span (from multiple timestamps)
+				// We can check this by seeing if the match is part of already processed content
+				// Since we process multiple timestamps first, any remaining single timestamps are safe to process
+
 				const clean = match.replace(/[\[\]]/g, "");
 				const parts = clean.split(":").map((p) => parseInt(p, 10));
 				let totalSeconds = 0;
@@ -2193,17 +4520,20 @@ Final formatting rules for your output:
 					return match;
 				}
 				const formattedTime = this.formatTimestamp(totalSeconds);
-				return `<span class="clickable-timestamp" data-time="${totalSeconds}">${formattedTime}</span>`;
+				return `<span class="clickable-timestamp" data-time="${totalSeconds}">${this.escapeHTML(formattedTime)}</span>`;
 			});
 		} catch (error) {
-			console.error("Error converting timestamps to clickable:", error);
-			return text;
+			this.logError("Error converting timestamps to clickable", error);
+			return this.escapeHTML(text);
 		}
 	}
 
 	// Minimal allowlist sanitizer to reduce XSS risk from model output
 	sanitizeHTML(dirtyHtml) {
 		try {
+			if (typeof dirtyHtml !== "string") {
+				return "";
+			}
 			const allowedTags = new Set(["p", "h1", "h2", "h3", "h4", "ul", "ol", "li", "strong", "em", "blockquote", "code", "pre", "span"]);
 			const template = document.createElement("template");
 			template.innerHTML = dirtyHtml;
@@ -2214,13 +4544,17 @@ Final formatting rules for your output:
 						if (!allowedTags.has(tag)) {
 							child.replaceWith(...Array.from(child.childNodes));
 						} else {
-							// Allow only class and data-time on span.clickable-timestamp
+							// Allow class, data-time, and data-timestamps on span elements
 							Array.from(child.attributes).forEach((attr) => {
 								const name = attr.name.toLowerCase();
 								const value = attr.value;
-								const isClickableSpan = tag === "span" && name === "class" && value === "clickable-timestamp";
+								const isClickableSpan =
+									tag === "span" &&
+									name === "class" &&
+									(value === "clickable-timestamp" || value === "multiple-timestamps-wrapper");
 								const isDataTime = tag === "span" && name === "data-time" && /^\d+$/.test(value);
-								if (!isClickableSpan && !isDataTime) {
+								const isDataTimestamps = tag === "span" && name === "data-timestamps" && /^[\d,]+$/.test(value);
+								if (!isClickableSpan && !isDataTime && !isDataTimestamps) {
 									child.removeAttribute(name);
 								}
 							});
@@ -2232,7 +4566,9 @@ Final formatting rules for your output:
 			walk(template.content);
 			return template.innerHTML;
 		} catch (e) {
-			return dirtyHtml;
+			// On error, escape the HTML instead of returning unsanitized content
+			this.logError("Error sanitizing HTML, falling back to escaping", e);
+			return this.escapeHTML(dirtyHtml);
 		}
 	}
 
@@ -2247,22 +4583,37 @@ Final formatting rules for your output:
 				button.addEventListener("click", this.handleTimestampClick.bind(this));
 			});
 		} catch (error) {
-			console.error("Error setting up timestamp click listeners:", error);
+			this.logError("Error setting up timestamp click listeners", error);
 		}
 	}
 
 	// Handle timestamp button clicks
 	handleTimestampClick(event) {
 		try {
-			const timestamp = event.target;
+			const timestamp = event.target.closest(".clickable-timestamp");
+			if (!timestamp) return;
+
+			// Stop propagation to prevent bullet click handler from running
+			event.stopPropagation();
+
 			const timeInSeconds = parseInt(timestamp.getAttribute("data-time"));
 
 			if (!isNaN(timeInSeconds)) {
-				console.log(`Timestamp clicked: ${timeInSeconds} seconds`);
+				// If this timestamp is inside a summary bullet, add active class
+				const bullet = timestamp.closest(".summary-text li");
+				if (bullet) {
+					// Remove active class from all bullets
+					document.querySelectorAll(".summary-text li").forEach((li) => {
+						li.classList.remove("summary-bullet-active");
+					});
+					bullet.classList.add("summary-bullet-active");
+				}
+
+				this.log(`Timestamp clicked: ${timeInSeconds} seconds`);
 				this.jumpToTimestamp(timeInSeconds);
 			}
 		} catch (error) {
-			console.error("Error handling timestamp click:", error);
+			this.logError("Error handling timestamp click", error);
 		}
 	}
 
@@ -2306,7 +4657,7 @@ Final formatting rules for your output:
 			// Fallback: append to body
 			document.body.appendChild(container);
 		} catch (error) {
-			console.error("Error inserting container:", error);
+			this.logError("Error inserting container", error);
 			// Fallback: append to body
 			document.body.appendChild(container);
 		}
@@ -2334,7 +4685,7 @@ Final formatting rules for your output:
 
 			return null;
 		} catch (error) {
-			console.error("Error finding insertion point:", error);
+			this.logError("Error finding insertion point", error);
 			return null;
 		}
 	}
@@ -2346,7 +4697,7 @@ Final formatting rules for your output:
 				subtitleCount.textContent = this.subtitles.length;
 			}
 		} catch (error) {
-			console.error("Error updating subtitle display:", error);
+			this.logError("Error updating subtitle display", error);
 		}
 	}
 
@@ -2354,15 +4705,22 @@ Final formatting rules for your output:
 		try {
 			const subtitlesContent = document.getElementById("subtitles-content");
 			if (subtitlesContent && this.subtitles.length > 0) {
-				// Show all subtitles with timestamps
+				// Remove any existing subtitles list to prevent duplicates
+				const existingList = subtitlesContent.querySelector(".subtitles-list");
+				if (existingList) {
+					existingList.remove();
+				}
+
+				// Show all subtitles with timestamps, highlighting search matches if any
 				const subtitlesText = this.subtitles
 					.map((subtitle, index) => {
 						const timing = this.subtitleTimings[index] || { start: 0, end: 0 };
 						const startTime = this.formatTimestamp(timing.start);
-						const endTime = this.formatTimestamp(timing.end);
+						// Highlight search matches in subtitle text
+						const highlightedText = this.highlightSearchMatches(subtitle, index);
 						return `<div class="subtitle-item" data-index="${index}" data-start-time="${timing.start}">
-							<strong class="timestamp">${startTime} - ${endTime}</strong>
-							<span class="subtitle-text">${subtitle}</span>
+							<span class="clickable-timestamp caption-timestamp" data-time="${timing.start}">${this.escapeHTML(startTime)}</span>
+							<span class="subtitle-text">${highlightedText}</span>
 						</div>`;
 					})
 					.join("");
@@ -2371,82 +4729,108 @@ Final formatting rules for your output:
 				const subtitlesInfo = subtitlesContent.querySelector("#subtitles-info");
 				const subtitlesInfoHTML = subtitlesInfo ? subtitlesInfo.outerHTML : "";
 
-				subtitlesContent.innerHTML = `
-          ${subtitlesInfoHTML}
-          <div class="subtitles-list">
-            ${subtitlesText}
-          </div>
-        `;
+				// Create the subtitles list element
+				const subtitlesList = document.createElement("div");
+				subtitlesList.className = "subtitles-list";
+				subtitlesList.innerHTML = subtitlesText;
+
+				// Clear and rebuild content to ensure no duplicates
+				subtitlesContent.innerHTML = subtitlesInfoHTML;
+				subtitlesContent.appendChild(subtitlesList);
 
 				// Update the subtitle count
 				this.updateSubtitlesDisplay();
 
-				// Immediately update active caption when subtitles are displayed
+				// Ensure scroll tracking is set up (in case it was lost during rebuild)
+				// Note: Event delegation means listeners on the container should still work,
+				// but we ensure it's set up just in case
+				this.setupScrollTracking();
+
+				// Ensure video playback tracking is set up (it might not be ready yet)
+				// This ensures we have the video element reference
+				if (!this.videoElement) {
+					this.setupVideoPlaybackTracking();
+				}
+
+				// Reset active index to force recalculation after DOM rebuild
+				// This ensures highlighting is reapplied even if video position hasn't changed
+				this.currentActiveIndex = -1;
+
+				// Set up click listeners for caption timestamps (they use clickable-timestamp class)
 				setTimeout(() => {
-					this.updateActiveCaption();
+					this.setupTimestampClickListeners();
 				}, 100);
+
+				// Immediately update active caption when subtitles are displayed
+				// Use a slightly longer delay to ensure DOM and video element are fully ready
+				setTimeout(() => {
+					// Refresh video element reference in case it wasn't available before
+					if (!this.videoElement) {
+						this.videoElement = document.querySelector("video");
+					}
+					this.updateActiveCaption();
+				}, 250);
 
 				// Automatically generate summary if not already generated and subtitles are properly loaded
 				if (!this.autoSummaryGenerated && this.validateSubtitlesForSummary()) {
 					this.autoSummaryGenerated = true;
-					console.log(`Subtitles validated (${this.subtitles.length} subtitles), automatically generating summary...`);
+					this.log(`Subtitles validated (${this.subtitles.length} subtitles), automatically generating summary...`);
 
 					// Add a longer delay to ensure everything is properly loaded
 					setTimeout(() => {
 						this.generateSummary();
-					}, 2000);
+					}, CONSTANTS.INITIAL_RETRY_DELAY_MS * 2);
 				} else if (!this.autoSummaryGenerated) {
-					console.log("Subtitles not ready for auto-summary generation, will retry...");
+					this.log("Subtitles not ready for auto-summary generation, will retry...");
 					// Retry subtitle extraction if not enough subtitles
-					if (this.subtitles.length < 5) {
+					if (this.subtitles.length < CONSTANTS.MIN_SUBTITLES_FOR_SUMMARY) {
 						setTimeout(() => {
 							this.setupSubtitlesExtraction();
-						}, 1000);
+						}, CONSTANTS.INITIAL_RETRY_DELAY_MS);
 					}
 				}
 			}
 		} catch (error) {
-			console.error("Error displaying subtitles in view:", error);
+			this.logError("Error displaying subtitles in view", error);
 		}
 	}
 
 	async generateSummary(force = false) {
 		try {
-			console.log("Starting summary generation...");
+			this.log("Starting summary generation...");
 
 			// Check if extension is properly initialized
 			if (!this.initializationComplete) {
-				console.log("Extension not fully initialized, attempting to reinitialize...");
+				this.log("Extension not fully initialized, attempting to reinitialize...");
 				this.setupImmediate();
-				await new Promise((resolve) => setTimeout(resolve, 1000));
+				await new Promise((resolve) => setTimeout(resolve, CONSTANTS.INITIAL_RETRY_DELAY_MS));
 			}
 
 			if (this.isProcessing) {
-				console.log("Already processing, skipping...");
+				this.log("Already processing, skipping...");
 				return;
 			}
 
 			if (this.subtitles.length === 0) {
-				console.log("No subtitles available, showing error...");
+				this.log("No subtitles available, showing error...");
 				this.showError("No subtitles found. The extension will try to enable auto-generated captions, but this video may not have any captions available.");
 				// Try to extract subtitles again
 				setTimeout(() => {
 					this.setupSubtitlesExtraction();
-				}, 1000);
+				}, CONSTANTS.INITIAL_RETRY_DELAY_MS);
 				return;
 			}
 
 			// Additional check to ensure subtitles are for the current video
 			if (!this.subtitlesExtractionStartTime && !force) {
-				console.log("No subtitle extraction start time, skipping summary generation");
+				this.log("No subtitle extraction start time, skipping summary generation");
 				return;
 			}
 
 			if (this.subtitlesExtractionStartTime) {
 				const timeSinceExtraction = Date.now() - this.subtitlesExtractionStartTime;
-				if (timeSinceExtraction > 30000 && !force) {
-					// 30 seconds
-					console.log("Subtitles are too old, skipping summary generation");
+				if (timeSinceExtraction > CONSTANTS.SUBTITLE_EXTRACTION_TIMEOUT_MS && !force) {
+					this.log("Subtitles are too old, skipping summary generation");
 					return;
 				}
 			}
@@ -2469,21 +4853,28 @@ Final formatting rules for your output:
 				pageUrl: location.href,
 			};
 
-			console.log(`Sending summary request with ${this.subtitles.length} subtitles and title: ${videoTitle}`);
-			console.log("Key timestamps available:", keyTimestamps);
+			this.log(`Sending summary request with ${this.subtitles.length} subtitles and title: ${videoTitle}`);
+			this.log("Key timestamps available:", keyTimestamps);
 
 			// Chunk if too large
-			const MAX_CHARS = 60000;
-			if (subtitlesText.length > MAX_CHARS) {
-				console.log("Subtitles are large, using chunked summarization...");
+			if (subtitlesText.length > CONSTANTS.MAX_CHARS_FOR_SINGLE_REQUEST) {
+				this.log("Subtitles are large, using chunked summarization...");
 				try {
 					this.summary = await this.summarizeInChunks(subtitlesText, videoTitle, keyTimestamps);
 					this.displaySummary();
 					this.switchTab("summary");
 					return;
 				} catch (e) {
-					console.error("Chunked summarization failed:", e);
-					this.showError(e.message || "Failed to generate summary");
+					this.logError("Chunked summarization failed", e);
+					// Check for extension context invalidated error
+					if (
+						e.isContextInvalidated ||
+						(e.message && (e.message.includes("Extension context invalidated") || e.message.includes("Extension was reloaded")))
+					) {
+						this.showError("Extension was reloaded. Please refresh the page and try again.", true);
+					} else {
+						this.showError(e.message || "Failed to generate summary");
+					}
 					return;
 				}
 			}
@@ -2492,7 +4883,7 @@ Final formatting rules for your output:
 			let lastError = null;
 			for (let attempt = 1; attempt <= 3; attempt++) {
 				try {
-					const response = await chrome.runtime.sendMessage({
+					const response = await this.sendMessageToBackground({
 						action: "summarize",
 						subtitles: subtitlesText,
 						videoTitle,
@@ -2507,14 +4898,22 @@ Final formatting rules for your output:
 					}
 					lastError = response ? response.error : "No response from background script";
 				} catch (error) {
+					// If it's an extension context invalidated error, show message and return early
+					if (
+						error.isContextInvalidated ||
+						(error.message && (error.message.includes("Extension context invalidated") || error.message.includes("Extension was reloaded")))
+					) {
+						this.showError(error.message || "Extension was reloaded. Please refresh the page and try again.", true);
+						return;
+					}
 					lastError = error.message || "Unknown error";
 				}
 				if (attempt < 3) await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
 			}
 			this.showError(lastError || "Failed to generate summary after multiple attempts");
 		} catch (error) {
-			console.error("Error generating summary:", error);
-			console.error("Error details:", {
+			this.logError("Error generating summary", error);
+			this.log("Error details:", {
 				message: error.message,
 				stack: error.stack,
 				subtitlesLength: this.subtitles.length,
@@ -2530,11 +4929,76 @@ Final formatting rules for your output:
 		}
 	}
 
+	// Calculate video duration from subtitle timings
+	getVideoDuration() {
+		try {
+			// Try to get duration from video element first
+			if (this.videoElement && Number.isFinite(this.videoElement.duration) && this.videoElement.duration > 0) {
+				return this.videoElement.duration;
+			}
+			// Fallback to last subtitle timing
+			if (this.subtitleTimings && this.subtitleTimings.length > 0) {
+				const lastTiming = this.subtitleTimings[this.subtitleTimings.length - 1];
+				if (lastTiming && lastTiming.end) {
+					return lastTiming.end;
+				}
+				if (lastTiming && lastTiming.start) {
+					// Estimate: assume last subtitle is ~5 seconds long
+					return lastTiming.start + 5;
+				}
+			}
+			return null;
+		} catch (error) {
+			this.logError("Error calculating video duration", error);
+			return null;
+		}
+	}
+
+	// Calculate chunk duration based on subtitle indices
+	getChunkDuration(indices) {
+		try {
+			if (!indices || indices.length === 0 || !this.subtitleTimings || this.subtitleTimings.length === 0) {
+				return null;
+			}
+			const firstIndex = indices[0];
+			const lastIndex = indices[indices.length - 1];
+			const firstTiming = this.subtitleTimings[firstIndex];
+			const lastTiming = this.subtitleTimings[lastIndex];
+			if (!firstTiming || !lastTiming) return null;
+			// Use end time if available, otherwise estimate
+			const startTime = firstTiming.start || 0;
+			const endTime = lastTiming.end || lastTiming.start || startTime;
+			return Math.max(0, endTime - startTime);
+		} catch (error) {
+			this.logError("Error calculating chunk duration", error);
+			return null;
+		}
+	}
+
+	// Calculate token budget for a chunk based on proportional duration
+	calculateTokenBudget(chunkDuration, totalDuration, totalChunks, estimatedMaxTokens = 4000) {
+		try {
+			if (!chunkDuration || !totalDuration || totalDuration <= 0) {
+				// Fallback: equal distribution
+				return Math.floor(estimatedMaxTokens / totalChunks);
+			}
+			// Calculate proportion of video this chunk represents
+			const proportion = chunkDuration / totalDuration;
+			// Allocate tokens proportionally, with a minimum to ensure coverage
+			const proportionalTokens = Math.floor(estimatedMaxTokens * proportion);
+			const minTokens = Math.floor(estimatedMaxTokens / totalChunks);
+			return Math.max(minTokens, proportionalTokens);
+		} catch (error) {
+			this.logError("Error calculating token budget", error);
+			return Math.floor(estimatedMaxTokens / totalChunks);
+		}
+	}
+
 	// Split subtitles into chunks, summarize each, then combine
 	async summarizeInChunks(subtitlesText, videoTitle, keyTimestamps) {
-		const CHUNK_SIZE = 30000; // increase per-chunk payload to reduce number of round trips
-		const INTER_CHUNK_DELAY_MS = 800; // shorter delay between chunk requests to speed up
-		const MAX_RETRIES_PER_CHUNK = 4;
+		const CHUNK_SIZE = CONSTANTS.CHUNK_SIZE;
+		const INTER_CHUNK_DELAY_MS = CONSTANTS.INTER_CHUNK_DELAY_MS;
+		const MAX_RETRIES_PER_CHUNK = CONSTANTS.MAX_RETRIES_PER_CHUNK;
 		// Build chunks aligned to subtitle boundaries to preserve timestamps
 		const chunks = [];
 		let buffer = "";
@@ -2552,40 +5016,109 @@ Final formatting rules for your output:
 		if (currentIndices.length > 0) {
 			chunks.push({ text: buffer.trim(), indices: currentIndices.slice() });
 		}
+
+		// Calculate video duration and token budgets
+		const totalDuration = this.getVideoDuration();
+		const totalChunks = chunks.length;
+		const estimatedMaxTokens = 4000; // Conservative estimate for response tokens
 		const chunkSummaries = [];
 		// Initialize progress; total is number of chunks
 		this.generationProgress = { current: 0, total: chunks.length };
 		this.updateGenerateButton(true);
-		for (let i = 0; i < chunks.length; i++) {
-			// Update progress before sending each chunk
-			this.generationProgress = { current: i + 1, total: chunks.length };
-			this.updateGenerateButton(true);
-			const timestampReference = this.buildTimestampReferenceForIndices(chunks[i].indices, 20);
-			const prompt = `You will receive a chunk (${i + 1}/${
+
+		// Process chunks in parallel with concurrency limit for better performance
+		const MAX_CONCURRENT = CONSTANTS.MAX_CONCURRENT_CHUNKS || 3;
+		const processChunk = async (chunkIndex) => {
+			const chunk = chunks[chunkIndex];
+			const timestampReference = this.buildTimestampReferenceForIndices(chunk.indices, 20);
+			const isFirstChunk = chunkIndex === 0;
+			const isLastChunk = chunkIndex === chunks.length - 1;
+			const chunkPosition = isFirstChunk ? "beginning" : isLastChunk ? "end" : "middle";
+
+			// Calculate token budget for this chunk
+			const chunkDuration = this.getChunkDuration(chunk.indices);
+			const tokenBudget = this.calculateTokenBudget(chunkDuration, totalDuration, totalChunks, estimatedMaxTokens);
+			const chunkProportion = totalDuration && chunkDuration ? ((chunkDuration / totalDuration) * 100).toFixed(1) : (100 / totalChunks).toFixed(1);
+
+			const prompt = `You will receive chunk ${chunkIndex + 1} of ${
 				chunks.length
-			}) of subtitles for the YouTube video titled "${videoTitle}". Summarize ONLY this chunk with clear sections (##) and keep it concise.
+			} from the YouTube video titled "${videoTitle}". This chunk represents the ${chunkPosition} portion of the video${
+				totalDuration && chunkDuration ? ` (approximately ${chunkProportion}% of the video)` : ""
+			}.
+
+TOKEN BUDGET ALLOCATION:
+- This chunk represents ${chunkProportion}% of the total video
+- You have approximately ${tokenBudget} tokens allocated for your response
+- Use your token budget PROPORTIONALLY - do not exceed this allocation
+- Keep your summary CONCISE and focused on the KEY information from this chunk
+- Ensure EVEN coverage within this chunk - don't spend all tokens on the start
+
+IMPORTANT: This is ONE PART of a longer video that will be combined with other chunks. Your summary will be merged with summaries from other parts of the video. Therefore:
+- Keep your summary CONCISE and focused on the KEY information from this chunk
+- Do NOT over-detail early content - save detail for important points throughout
+- Ensure you cover the content in this chunk EVENLY - don't spend all your detail on the start of this chunk
+- If this is the final chunk (${isLastChunk ? "YES" : "NO"}), make sure to include ALL important content from the end of the video
+- If this is the first chunk (${isFirstChunk ? "YES" : "NO"}), be concise so later chunks have room for detail
+- RESPECT YOUR TOKEN BUDGET: This chunk is ${chunkProportion}% of the video - use approximately ${chunkProportion}% of your available detail/tokens
 
 Chunk content:
-${chunks[i].text}
+${chunk.text}
 
 Available timestamps from this chunk (use only these when referencing moments):
 ${timestampReference}
 
-IMPORTANT: Only use timestamps listed above when referencing specific moments. Do not make up timestamps.`;
+CRITICAL FORMATTING REQUIREMENT:
+- START YOUR RESPONSE DIRECTLY WITH THE FIRST SECTION HEADER (##)
+- DO NOT include any introductory text, explanations, or meta-commentary before the summary
+- DO NOT write phrases like "Here's a summary" or "Okay, here's..." or any similar introductory text
+- Begin immediately with the markdown structure
+
+Create a summary with:
+- Logical section headers (##) that describe the content in this chunk - add relevant emojis to headers (e.g., 📝, 💡, 🎯, ⚠️, ✅, 🔑)
+- Bullet points summarizing the key information in each section
+- EVERY bullet point MUST include a timestamp in [MM:SS] or [HH:MM:SS] format
+- Match each bullet point to the most relevant timestamp from the list above
+- Include as many bullets per section as needed based on content density, but keep them concise
+- Use **bold text** EXTENSIVELY - bold at least 2-4 key words or phrases in EVERY bullet point for better readability
+- Bold important terms, concepts, numbers, statistics, names, features, and key information
+
+CRITICAL: 
+- Every bullet point must have a timestamp. Use only timestamps listed above. Do not make up timestamps.
+- Aim for 30-50% of each bullet point to be bolded for optimal readability.
+- Keep summaries concise and evenly detailed - this chunk will be combined with others, so don't over-detail early content.
+- Ensure you cover ALL important content from this chunk, especially if this is the final chunk.`;
+
 			let attempt = 0;
 			let success = false;
 			let lastError = null;
 			while (attempt < MAX_RETRIES_PER_CHUNK && !success) {
 				try {
-					const res = await chrome.runtime.sendMessage({
+					const res = await this.sendMessageToBackground({
 						action: "summarize",
 						customPrompt: prompt,
-						meta: { ...meta, phase: "chunk", index: i + 1, total: chunks.length },
+						meta: { ...meta, phase: "chunk", index: chunkIndex + 1, total: chunks.length },
 					});
 					if (!res || !res.success) throw new Error(res?.error || "Failed to summarize chunk");
-					chunkSummaries.push(res.summary);
+
+					// Store result at correct index to maintain order
+					chunkSummaries[chunkIndex] = res.summary;
+
+					// Update progress
+					const completed = chunkSummaries.filter((s) => s !== undefined).length;
+					this.generationProgress = { current: completed, total: chunks.length };
+					this.updateGenerateButton(true);
+
 					success = true;
 				} catch (e) {
+					// If extension context invalidated, throw immediately
+					if (
+						e.isContextInvalidated ||
+						(e.message && (e.message.includes("Extension context invalidated") || e.message.includes("Extension was reloaded")))
+					) {
+						const error = new Error("Extension was reloaded. Please refresh the page and try again.");
+						error.isContextInvalidated = true;
+						throw error;
+					}
 					lastError = e;
 					const backoffMs = Math.min(10000, 1000 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
 					await new Promise((r) => setTimeout(r, backoffMs));
@@ -2593,28 +5126,78 @@ IMPORTANT: Only use timestamps listed above when referencing specific moments. D
 				}
 			}
 			if (!success) throw new Error(lastError?.message || "Failed to summarize chunk after retries");
-			// Small delay between chunks to avoid rate limits
-			if (i < chunks.length - 1) {
+		};
+
+		// Process chunks with concurrency limit for better performance
+		for (let i = 0; i < chunks.length; i += MAX_CONCURRENT) {
+			const batch = chunks.slice(i, Math.min(i + MAX_CONCURRENT, chunks.length));
+			const batchPromises = batch.map((_, batchIndex) => processChunk(i + batchIndex));
+			await Promise.all(batchPromises);
+			// Small delay between batches to avoid rate limits
+			if (i + MAX_CONCURRENT < chunks.length) {
 				await new Promise((r) => setTimeout(r, INTER_CHUNK_DELAY_MS));
 			}
 		}
 
+		// Ensure all summaries are in order (remove any undefined entries and maintain order)
+		const orderedSummaries = [];
+		for (let i = 0; i < chunks.length; i++) {
+			if (chunkSummaries[i] !== undefined) {
+				orderedSummaries.push(chunkSummaries[i]);
+			}
+		}
+
+		if (orderedSummaries.length !== chunks.length) {
+			throw new Error(`Failed to summarize all chunks. Expected ${chunks.length}, got ${orderedSummaries.length}`);
+		}
+
 		// Combine hierarchically in batches to keep prompt sizes small
 		const batchSize = 5; // combine more parts per batch to reduce combine rounds
-		let currentLevel = chunkSummaries.slice();
+		let currentLevel = orderedSummaries.slice();
 		const combineOneBatch = async (batch, title) => {
 			const globalTsRef = this.buildTimestampReferenceFromKeyTimestamps(keyTimestamps);
+			const batchProportion = totalChunks > 0 ? ((batch.length / totalChunks) * 100).toFixed(1) : "unknown";
 			const combinePrompt = `You are given ${
 				batch.length
-			} partial summaries for the YouTube video titled "${title}". Merge them into one concise, non-redundant summary with the structure:
+			} partial summaries (representing ${batchProportion}% of the video) for the YouTube video titled "${title}". These summaries represent different parts of the video from start to finish. Merge them into one cohesive summary that covers the ENTIRE video evenly.
 
-## Main Topic
-## Key Points
-## Important Insights
-## Notable Details
-## Overall Message
+TOKEN BUDGET AWARENESS:
+- These ${batch.length} summaries represent ${batchProportion}% of the total video
+- Allocate your response tokens proportionally across all parts
+- Do NOT over-allocate tokens to early summaries - ensure later summaries get adequate representation
+- Maintain EVEN detail distribution across all parts
 
-Avoid duplication. Use only the timestamps listed below when referencing specific moments.
+CRITICAL: This video has been split into multiple parts. You MUST ensure that:
+- ALL parts of the video are represented in the final summary - from beginning to end
+- Content from later parts of the video is NOT omitted or cut short
+- The summary maintains EVEN coverage across the entire video timeline
+- If you notice that later parts of the video have less detail, prioritize including content from those parts
+- The summary should flow chronologically from start to finish, covering the entire video
+
+Analyze all partial summaries to identify natural thematic or chronological sections. Create section headers that accurately describe each part of the video, then organize the content accordingly.
+
+Structure:
+- Start with an "## Overview" section (1-2 sentences)
+- Create logical sections based on the video's content structure (e.g., "Introduction", "Main Concepts", "Examples", "Conclusion", or topic-specific headers)
+- Order sections chronologically as they appear in the video - ensure you cover from start to finish
+- Include as many bullet points per section as needed to adequately summarize the content
+- End with a "## Key Takeaways" section
+
+CRITICAL REQUIREMENTS:
+- EVERY bullet point MUST include a timestamp in [MM:SS] or [HH:MM:SS] format
+- Match each bullet point to the most relevant timestamp from the list below
+- If a bullet covers content from multiple timestamps, use the timestamp that best represents the main point
+- Avoid duplication - merge similar content from different partial summaries
+- Maintain chronological order when possible
+- ENSURE COMPLETE COVERAGE: Make sure content from ALL parts of the video (especially later parts) is included in the final summary
+- Do NOT cut off early - the summary must cover the entire video from start to finish
+- Use only the timestamps listed below when referencing specific moments - do not make up timestamps
+- Use **bold text** EXTENSIVELY - bold at least 2-4 key words or phrases in EVERY bullet point for better readability
+- Bold important terms, concepts, numbers, statistics, names, features, actions, and key takeaways
+- Add relevant emojis to section headers to make them more visually engaging (e.g., 📝 Introduction, 💡 Key Concepts, 🎯 Main Points, ⚠️ Important Notes, ✅ Conclusion, 🔑 Key Takeaways)
+- The number of sections and bullets should be determined by the actual content, not a fixed template
+- Aim for 30-50% of each bullet point to be bolded for optimal readability
+- Prioritize including content from later parts of the video if space is limited - ensure the entire video is covered
 
 Available timestamps from the video:
 ${globalTsRef}
@@ -2626,14 +5209,30 @@ ${batch
 		(s, idx) => `Part ${idx + 1}:
 ${s}`
 	)
-	.join("\n\n")}`;
+	.join("\n\n")}
+
+CRITICAL FORMATTING REQUIREMENT:
+- START YOUR RESPONSE DIRECTLY WITH "## Overview"
+- DO NOT include any introductory text, explanations, or meta-commentary before the summary
+- DO NOT write phrases like "Here's a merged summary" or "Okay, here's..." or any similar introductory text
+- Begin immediately with the markdown structure: ## Overview`;
 			let attempt = 0;
 			while (attempt < 4) {
 				try {
-					const res = await chrome.runtime.sendMessage({ action: "summarize", customPrompt: combinePrompt, meta: { ...meta, phase: "combine" } });
+					const res = await this.sendMessageToBackground({ action: "summarize", customPrompt: combinePrompt, meta: { ...meta, phase: "combine" } });
 					if (!res || !res.success) throw new Error(res?.error || "Failed to combine batch");
-					return res.summary;
+					// Strip any introductory text that might have slipped through
+					return this.stripIntroductoryText(res.summary);
 				} catch (e) {
+					// If extension context invalidated, re-throw with clearer message
+					if (
+						e.isContextInvalidated ||
+						(e.message && (e.message.includes("Extension context invalidated") || e.message.includes("Extension was reloaded")))
+					) {
+						const error = new Error("Extension was reloaded. Please refresh the page and try again.");
+						error.isContextInvalidated = true;
+						throw error;
+					}
 					const backoffMs = Math.min(12000, 1000 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
 					await new Promise((r) => setTimeout(r, backoffMs));
 					attempt += 1;
@@ -2648,16 +5247,147 @@ ${s}`
 				const batch = currentLevel.slice(i, i + batchSize);
 				const combined = await combineOneBatch(batch, videoTitle);
 				nextLevel.push(combined);
-				// Delay between batch combines
-				await new Promise((r) => setTimeout(r, 700));
+				// Reduced delay between batch combines (was 700ms)
+				if (i + batchSize < currentLevel.length) {
+					await new Promise((r) => setTimeout(r, 300));
+				}
 			}
 			currentLevel = nextLevel;
 		}
 
+		// Final compression pass to ensure even coverage
+		// Only run compression for videos longer than 10 minutes to avoid unnecessary delay for short videos
+		const finalSummary = currentLevel[0];
+		const shouldCompress = totalDuration && totalDuration > 600; // 10 minutes = 600 seconds
+		const compressedSummary = shouldCompress ? await this.compressSummaryForEvenCoverage(finalSummary, videoTitle, keyTimestamps, totalDuration) : finalSummary;
+
+		// Strip any introductory text that might precede "## Overview"
+		const cleanedSummary = this.stripIntroductoryText(compressedSummary);
+
 		// Clear progress after combine
 		this.generationProgress = null;
 		this.updateGenerateButton(true);
-		return currentLevel[0];
+		return cleanedSummary;
+	}
+
+	// Strip introductory text that might precede "## Overview"
+	stripIntroductoryText(summary) {
+		try {
+			if (!summary || typeof summary !== "string") return summary;
+
+			// Find the first occurrence of "## Overview" or any "##" header
+			const overviewIndex = summary.indexOf("## Overview");
+			const firstHeaderIndex = summary.search(/^##\s+/m);
+
+			// Use the earlier of the two if both exist, otherwise use whichever exists
+			let startIndex = -1;
+			if (overviewIndex !== -1 && firstHeaderIndex !== -1) {
+				startIndex = Math.min(overviewIndex, firstHeaderIndex);
+			} else if (overviewIndex !== -1) {
+				startIndex = overviewIndex;
+			} else if (firstHeaderIndex !== -1) {
+				startIndex = firstHeaderIndex;
+			}
+
+			// If we found a header, strip everything before it
+			if (startIndex > 0) {
+				const cleaned = summary.substring(startIndex).trim();
+				// Also remove any trailing newlines at the start
+				return cleaned.replace(/^\n+/, "");
+			}
+
+			return summary;
+		} catch (error) {
+			this.logError("Error stripping introductory text", error);
+			return summary;
+		}
+	}
+
+	// Compression pass to redistribute detail evenly across the entire video
+	async compressSummaryForEvenCoverage(summary, videoTitle, keyTimestamps, totalDuration) {
+		try {
+			const globalTsRef = this.buildTimestampReferenceFromKeyTimestamps(keyTimestamps);
+			const durationMinutes = totalDuration ? Math.floor(totalDuration / 60) : null;
+			const durationSeconds = totalDuration ? Math.floor(totalDuration % 60) : null;
+			const durationStr = durationMinutes !== null ? `${durationMinutes}:${String(durationSeconds).padStart(2, "0")}` : "unknown";
+
+			const compressionPrompt = `You are given a summary for the YouTube video titled "${videoTitle}". This summary was created by combining multiple parts of the video.
+
+CRITICAL TASK: Redistribute detail to ensure EVEN coverage across the ENTIRE video timeline.
+
+ANALYZE THE SUMMARY:
+1. Check if the summary covers the entire video from start to finish
+2. Identify if early sections have excessive detail while later sections are sparse or missing
+3. Verify that timestamps span the full video duration${totalDuration ? ` (total duration: ${durationStr})` : ""}
+
+REDISTRIBUTION RULES:
+- If early sections are too detailed, COMPRESS them while preserving key information
+- If later sections are sparse or missing, EXPAND them with more detail
+- Ensure the summary maintains chronological flow from beginning to end
+- Every section should have proportional detail based on its importance, not its position
+- The summary MUST cover the entire video timeline - do not cut off early
+
+STRUCTURE REQUIREMENTS:
+- Start with an "## Overview" section (1-2 sentences)
+- Create logical sections that cover the ENTIRE video chronologically
+- End with a "## Key Takeaways" section
+- EVERY bullet point MUST include a timestamp in [MM:SS] or [HH:MM:SS] format
+- Use **bold text** EXTENSIVELY - bold at least 2-4 key words/phrases per bullet
+- Add relevant emojis to section headers
+
+AVAILABLE TIMESTAMPS FROM THE VIDEO:
+${globalTsRef}
+
+CURRENT SUMMARY (may need redistribution):
+${summary}
+
+CRITICAL FORMATTING REQUIREMENT:
+- START YOUR RESPONSE DIRECTLY WITH "## Overview" 
+- DO NOT include any introductory text, explanations, or meta-commentary before the summary
+- DO NOT write phrases like "Here's a revised summary" or "Okay, here's..." or any similar introductory text
+- Begin immediately with the markdown structure: ## Overview
+
+Please provide a redistributed summary that ensures complete, even coverage of the entire video from start to finish.`;
+
+			let attempt = 0;
+			while (attempt < 3) {
+				try {
+					const res = await this.sendMessageToBackground({
+						action: "summarize",
+						customPrompt: compressionPrompt,
+						meta: { phase: "compression", videoTitle },
+					});
+					if (!res || !res.success) throw new Error(res?.error || "Failed to compress summary");
+					this.log("Summary compression pass completed successfully");
+					// Strip any introductory text that might have slipped through
+					return this.stripIntroductoryText(res.summary);
+				} catch (e) {
+					// If extension context invalidated, re-throw with clearer message
+					if (
+						e.isContextInvalidated ||
+						(e.message && (e.message.includes("Extension context invalidated") || e.message.includes("Extension was reloaded")))
+					) {
+						const error = new Error("Extension was reloaded. Please refresh the page and try again.");
+						error.isContextInvalidated = true;
+						throw error;
+					}
+					this.logError(`Compression pass attempt ${attempt + 1} failed`, e);
+					if (attempt === 2) {
+						// If compression fails, return original summary
+						this.log("Compression pass failed, returning original summary");
+						return summary;
+					}
+					const backoffMs = Math.min(8000, 1000 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
+					await new Promise((r) => setTimeout(r, backoffMs));
+					attempt += 1;
+				}
+			}
+			return summary;
+		} catch (error) {
+			this.logError("Error in compression pass", error);
+			// Return original summary if compression fails
+			return summary;
+		}
 	}
 
 	// Simple debounce helper
@@ -2696,6 +5426,8 @@ ${s}`
 								</svg>
 								<span>Generate Again</span>
 							`;
+						summarizeBtn.classList.add("generate-again");
+						summarizeBtn.classList.remove("waiting-subtitles");
 					} else if (this.subtitles.length > 0) {
 						summarizeBtn.innerHTML = `
 								<svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor">
@@ -2703,6 +5435,7 @@ ${s}`
 								</svg>
 								<span>Generate Summary</span>
 							`;
+						summarizeBtn.classList.remove("generate-again", "waiting-subtitles");
 					} else {
 						summarizeBtn.innerHTML = `
 								<svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor">
@@ -2710,12 +5443,14 @@ ${s}`
 								</svg>
 								<span>Waiting for Subtitles...</span>
 							`;
+						summarizeBtn.classList.add("waiting-subtitles");
+						summarizeBtn.classList.remove("generate-again");
 					}
 					summarizeBtn.classList.remove("loading");
 				}
 			}
 		} catch (error) {
-			console.error("Error updating generate button:", error);
+			this.logError("Error updating generate button", error);
 		}
 	}
 
@@ -2728,8 +5463,77 @@ ${s}`
 			}
 			return "YouTube Video";
 		} catch (error) {
-			console.error("Error getting video title:", error);
+			this.logError("Error getting video title", error);
 			return "YouTube Video";
+		}
+	}
+
+	waitForVideoInfoAndShow(container) {
+		try {
+			// Store container reference for checkAndShowContainer
+			this.pendingContainer = container;
+
+			const checkVideoInfo = () => {
+				// Check for video title
+				const titleSelectors = ["#title h1.title", "#title h1", "ytd-watch-metadata h1", "h1.ytd-video-primary-info-renderer"];
+				let titleFound = false;
+				for (const selector of titleSelectors) {
+					const titleElement = document.querySelector(selector);
+					if (titleElement && titleElement.textContent.trim()) {
+						titleFound = true;
+						break;
+					}
+				}
+
+				// Check for video info/metadata section
+				const infoSelectors = ["ytd-watch-metadata", "#meta-contents", "ytd-video-primary-info-renderer"];
+				let infoFound = false;
+				for (const selector of infoSelectors) {
+					const infoElement = document.querySelector(selector);
+					if (infoElement && infoElement.children.length > 0) {
+						infoFound = true;
+						break;
+					}
+				}
+
+				if (titleFound && infoFound) {
+					// Video info is loaded, mark as ready and check if we can show
+					this.videoInfoReady = true;
+					this.checkAndShowContainer();
+					return true;
+				}
+				return false;
+			};
+
+			// Initialize videoInfoReady flag
+			this.videoInfoReady = false;
+
+			// Check immediately
+			if (checkVideoInfo()) {
+				return;
+			}
+
+			// Check periodically with a timeout
+			let attempts = 0;
+			const maxAttempts = 20; // 10 seconds max wait (20 * 500ms)
+			const checkInterval = setInterval(() => {
+				attempts++;
+				if (checkVideoInfo() || attempts >= maxAttempts) {
+					clearInterval(checkInterval);
+					if (attempts >= maxAttempts) {
+						// Timeout: mark as ready anyway to prevent infinite waiting
+						this.videoInfoReady = true;
+						this.checkAndShowContainer();
+						this.log("Timeout waiting for video info, proceeding anyway");
+					}
+				}
+			}, 500);
+		} catch (error) {
+			this.logError("Error waiting for video info", error);
+			// On error, show the extension anyway
+			if (container) {
+				container.style.display = "flex";
+			}
 		}
 	}
 
@@ -2744,36 +5548,216 @@ ${s}`
           ${formattedSummary}
         </div>
       `;
+
+				// Calculate search bar height and update sticky header top position
+				this.updateStickyHeaderTop();
+
+				// Setup click handlers for summary bullet points
+				this.setupSummaryBulletClickListeners();
+
+				// Re-apply search highlights if there's an active search
+				if (this.summarySearchQuery && this.summarySearchQuery.length > 0) {
+					this.performSummarySearch();
+				}
 			}
 		} catch (error) {
-			console.error("Error displaying summary:", error);
+			this.logError("Error displaying summary", error);
+		}
+	}
+
+	updateStickyHeaderTop() {
+		try {
+			// Ensure headers have sticky positioning
+			const summaryContent = document.getElementById("summary-content");
+			if (!summaryContent) {
+				this.log("Summary content not found");
+				return;
+			}
+
+			const headers = summaryContent.querySelectorAll(".summary-text h2, .summary-text h3, .summary-text h4");
+			if (headers && headers.length > 0) {
+				this.log(`Found ${headers.length} headers to ensure sticky positioning`);
+				headers.forEach((header) => {
+					// Ensure sticky positioning is set
+					header.style.position = "sticky";
+					header.style.top = "0";
+					// Set z-index based on header level
+					const zIndex = header.tagName === "H2" ? "30" : header.tagName === "H3" ? "29" : "28";
+					header.style.zIndex = zIndex;
+					this.log(`Set ${header.tagName} to sticky with z-index ${zIndex}`);
+				});
+			} else {
+				this.log("No headers found");
+			}
+		} catch (error) {
+			this.logError("Error updating sticky header top", error);
+		}
+	}
+
+	setupSummaryBulletClickListeners() {
+		try {
+			const summaryBullets = document.querySelectorAll(".summary-text li");
+			summaryBullets.forEach((bullet) => {
+				// Remove existing listeners to prevent duplicates
+				bullet.removeEventListener("click", this.handleSummaryBulletClick);
+				// Add new listener
+				bullet.addEventListener("click", this.handleSummaryBulletClick.bind(this));
+			});
+		} catch (error) {
+			this.logError("Error setting up summary bullet click listeners", error);
+		}
+	}
+
+	handleSummaryBulletClick(event) {
+		try {
+			const bullet = event.currentTarget;
+
+			// Check if click was directly on a timestamp element - if so, let the timestamp handler deal with it
+			// The timestamp click handler will stop propagation, so we can just return here
+			if (event.target.closest(".clickable-timestamp")) {
+				// Timestamp click handler will handle this - just return
+				return;
+			}
+
+			// Check if this bullet has multiple timestamps BEFORE removing active classes
+			const multipleTimestampsWrapper = bullet.querySelector(".multiple-timestamps-wrapper");
+			const timestampsData = multipleTimestampsWrapper ? multipleTimestampsWrapper.getAttribute("data-timestamps") : null;
+			const wasActive = bullet.classList.contains("summary-bullet-active");
+
+			// Remove active class from all bullets
+			document.querySelectorAll(".summary-text li").forEach((li) => {
+				li.classList.remove("summary-bullet-active");
+			});
+
+			// If bullet has multiple timestamps and click was on bullet (not timestamp), cycle through them
+			if (timestampsData) {
+				const timestamps = timestampsData
+					.split(",")
+					.map((ts) => parseInt(ts.trim(), 10))
+					.filter((ts) => !isNaN(ts));
+				if (timestamps.length > 1) {
+					// Get current index from data attribute
+					// If this bullet was active, increment to next timestamp; if not, start at 0 (earliest)
+					let currentIndex = wasActive ? parseInt(bullet.getAttribute("data-timestamp-index") || "0", 10) : -1;
+
+					// Cycle to next timestamp (if was active, increment; if not, start at 0)
+					currentIndex = (currentIndex + 1) % timestamps.length;
+					bullet.setAttribute("data-timestamp-index", currentIndex.toString());
+
+					const selectedTimestamp = timestamps[currentIndex];
+
+					this.log(`Summary bullet clicked (cycling ${currentIndex + 1}/${timestamps.length}): ${selectedTimestamp} seconds`);
+					this.jumpToTimestamp(selectedTimestamp);
+
+					// Add active class to this bullet
+					bullet.classList.add("summary-bullet-active");
+					return;
+				}
+			}
+
+			// Single timestamp or no multiple timestamps wrapper - find single timestamp
+			const timestampElement = bullet.querySelector(".clickable-timestamp");
+			if (timestampElement) {
+				// Single timestamp
+				const timeInSeconds = parseInt(timestampElement.getAttribute("data-time"));
+				if (!isNaN(timeInSeconds)) {
+					this.log(`Summary bullet timestamp clicked: ${timeInSeconds} seconds`);
+					this.jumpToTimestamp(timeInSeconds);
+					// Add active class to this bullet
+					bullet.classList.add("summary-bullet-active");
+				}
+			} else {
+				// Try to find timestamp text in format [MM:SS] or [HH:MM:SS]
+				const bulletText = bullet.textContent || bullet.innerText || "";
+				const timestampMatch = bulletText.match(/\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]/);
+				if (timestampMatch) {
+					const hours = timestampMatch[3] ? parseInt(timestampMatch[1]) : 0;
+					const minutes = timestampMatch[3] ? parseInt(timestampMatch[2]) : parseInt(timestampMatch[1]);
+					const seconds = timestampMatch[3] ? parseInt(timestampMatch[3]) : parseInt(timestampMatch[2]);
+					const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+					this.log(`Summary bullet timestamp found: ${totalSeconds} seconds`);
+					this.jumpToTimestamp(totalSeconds);
+					// Add active class to this bullet
+					bullet.classList.add("summary-bullet-active");
+				}
+			}
+		} catch (error) {
+			this.logError("Error handling summary bullet click", error);
 		}
 	}
 
 	formatSummaryContent(summary) {
 		try {
-			// Convert markdown-style headers to HTML
-			let formatted = summary
-				// Convert ## Main Headers to h1
-				.replace(/^##\s+(.+)$/gm, "<h1>$1</h1>")
-				// Convert ### Sub Headers to h2
-				.replace(/^###\s+(.+)$/gm, "<h2>$1</h2>")
-				// Convert #### Sub-sub Headers to h3
-				.replace(/^####\s+(.+)$/gm, "<h3>$1</h3>")
-				// Convert ##### Sub-sub-sub Headers to h4
-				.replace(/^#####\s+(.+)$/gm, "<h4>$1</h4>")
-				// Convert **bold text** to <strong>
-				.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-				// Convert *italic text* to <em>
-				.replace(/\*(.+?)\*/g, "<em>$1</em>")
-				// Convert paragraphs (double line breaks)
-				.replace(/\n\n/g, "</p><p>")
-				// Wrap in paragraph tags
-				.replace(/^(.+)$/gm, "<p>$1</p>")
-				// Clean up empty paragraphs
-				.replace(/<p><\/p>/g, "")
-				// Clean up consecutive paragraph tags
-				.replace(/<\/p><p>/g, "</p>\n<p>");
+			// Split into lines for processing
+			const lines = summary.split("\n");
+			let formatted = "";
+			let inList = false;
+
+			for (let i = 0; i < lines.length; i++) {
+				const line = lines[i].trim();
+
+				// Skip empty lines
+				if (!line) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					continue;
+				}
+
+				// Convert headers
+				if (line.match(/^##\s+(.+)$/)) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += line.replace(/^##\s+(.+)$/, "<h1>$1</h1>") + "\n";
+				} else if (line.match(/^###\s+(.+)$/)) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += line.replace(/^###\s+(.+)$/, "<h2>$1</h2>") + "\n";
+				} else if (line.match(/^####\s+(.+)$/)) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += line.replace(/^####\s+(.+)$/, "<h3>$1</h3>") + "\n";
+				} else if (line.match(/^#####\s+(.+)$/)) {
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += line.replace(/^#####\s+(.+)$/, "<h4>$1</h4>") + "\n";
+				} else if (line.match(/^[•\-\*]\s+(.+)$/) || line.startsWith("•") || line.startsWith("-") || line.startsWith("*")) {
+					// Bullet point - convert to <li>
+					if (!inList) {
+						formatted += "<ul>\n";
+						inList = true;
+					}
+					// Remove bullet character and any leading whitespace
+					const bulletContent = line.replace(/^[•\-\*]\s*/, "").trim();
+					formatted += `<li>${bulletContent}</li>\n`;
+				} else {
+					// Regular paragraph
+					if (inList) {
+						formatted += "</ul>\n";
+						inList = false;
+					}
+					formatted += `<p>${line}</p>\n`;
+				}
+			}
+
+			// Close any open list
+			if (inList) {
+				formatted += "</ul>\n";
+			}
+
+			// Convert **bold text** to <strong>
+			formatted = formatted.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+			// Convert *italic text* to <em> (but not bullet points)
+			formatted = formatted.replace(/(?<!^[•\-\*]\s)\*(.+?)\*/g, "<em>$1</em>");
 
 			// If no headers were found, treat the first line as a main header
 			if (!formatted.includes("<h1>") && !formatted.includes("<h2>") && !formatted.includes("<h3>") && !formatted.includes("<h4>")) {
@@ -2806,23 +5790,36 @@ ${s}`
 
 			return formatted;
 		} catch (error) {
-			console.error("Error formatting summary content:", error);
-			return `<p>${summary}</p>`;
+			this.logError("Error formatting summary content", error);
+			return `<p>${this.escapeHTML(summary)}</p>`;
 		}
 	}
 
-	showError(message) {
+	showError(message, isContextInvalidated = false) {
 		try {
 			const summaryContent = document.getElementById("summary-content");
 			if (summaryContent) {
-				summaryContent.innerHTML = `
+				let errorHTML = `
         <div class="error-message">
-          <p>❌ ${message}</p>
+          <p>❌ ${this.escapeHTML(message)}</p>
+        `;
+
+				// Add refresh button for context invalidated errors
+				if (isContextInvalidated) {
+					errorHTML += `
+          <div style="margin-top: 16px; text-align: center;">
+            <button class="recovery-button" onclick="window.location.reload()" style="margin-top: 12px;">
+              🔄 Refresh Page
+            </button>
         </div>
       `;
+				}
+
+				errorHTML += `</div>`;
+				summaryContent.innerHTML = errorHTML;
 			}
 		} catch (error) {
-			console.error("Error showing error message:", error);
+			this.logError("Error showing error message", error);
 		}
 	}
 
@@ -2833,14 +5830,23 @@ ${s}`
 				loadingIndicator.style.display = show ? "block" : "none";
 			}
 		} catch (error) {
-			console.error("Error showing loading state:", error);
+			this.logError("Error showing loading state", error);
 		}
 	}
 
 	setupThemeDetection() {
 		try {
-			// Initial theme detection
-			this.detectAndApplyTheme();
+			// Initial theme detection - try multiple times if container doesn't exist yet
+			const attemptThemeDetection = () => {
+				const container = document.getElementById("youtube-summarizer-container");
+				if (container) {
+					this.detectAndApplyTheme();
+				} else {
+					// Container not created yet, try again after a short delay
+					setTimeout(attemptThemeDetection, 100);
+				}
+			};
+			attemptThemeDetection();
 
 			// Watch for theme changes
 			this.themeObserver = new MutationObserver(() => {
@@ -2859,7 +5865,7 @@ ${s}`
 				attributeFilter: ["class"],
 			});
 		} catch (error) {
-			console.error("Error setting up theme detection:", error);
+			this.logError("Error setting up theme detection", error);
 		}
 	}
 
@@ -2875,9 +5881,16 @@ ${s}`
 				} else {
 					container.setAttribute("data-theme", "light");
 				}
+				// Mark theme as detected
+				this.themeDetected = true;
+				// Check if we can show the container now (if video info is also ready)
+				this.checkAndShowContainer();
 			}
 		} catch (error) {
-			console.error("Error detecting and applying theme:", error);
+			this.logError("Error detecting and applying theme", error);
+			// Even on error, mark theme as detected (default to light) to prevent infinite waiting
+			this.themeDetected = true;
+			this.checkAndShowContainer();
 		}
 	}
 
@@ -2917,8 +5930,77 @@ ${s}`
 
 			return false;
 		} catch (error) {
-			console.error("Error detecting YouTube dark mode:", error);
+			this.logError("Error detecting YouTube dark mode", error);
 			return false;
+		}
+	}
+
+	checkAndShowContainer() {
+		try {
+			// Check if all conditions are met:
+			// 1. Video info is ready
+			// 2. Theme is detected
+			// 3. Container exists
+			// 4. If transcript panel was opened, enough time has passed since it opened
+			if (!this.videoInfoReady || !this.themeDetected || !this.pendingContainer) {
+				return;
+			}
+
+			// If transcript panel was opened, check if enough time has passed
+			if (this.transcriptPanelOpened && this.transcriptPanelOpenTime) {
+				const timeSinceOpen = Date.now() - this.transcriptPanelOpenTime;
+				if (timeSinceOpen < this.transcriptPanelDelayMs) {
+					// Not enough time has passed, wait a bit more
+					const remainingDelay = this.transcriptPanelDelayMs - timeSinceOpen;
+					setTimeout(() => {
+						this.checkAndShowContainer();
+					}, remainingDelay + 50); // Add small buffer
+					return;
+				}
+			}
+
+			// All conditions met, show the container
+			const container = this.pendingContainer;
+			// Double-check container still exists
+			if (container && container.parentNode) {
+				container.style.display = "flex";
+				const delayInfo = this.transcriptPanelOpened ? ` (after ${this.transcriptPanelDelayMs}ms transcript panel delay)` : "";
+				this.log(`Video info and theme ready${delayInfo}, showing extension`);
+				// Clear the pending reference
+				this.pendingContainer = null;
+			}
+		} catch (error) {
+			this.logError("Error checking and showing container", error);
+		}
+	}
+
+	preventTranscriptAutoScroll() {
+		try {
+			// Override scrollIntoView to prevent auto-scrolling to transcript panel
+			const originalScrollIntoView = Element.prototype.scrollIntoView;
+
+			// Only override if not already overridden
+			if (!Element.prototype.scrollIntoView._youtubeSummarizerOverridden) {
+				Element.prototype.scrollIntoView = function (...args) {
+					// Block auto scroll triggered by transcript panel
+					if (this.closest("ytd-engagement-panel-section-list-renderer")) {
+						return;
+					}
+					// Also block scrolling for transcript-related elements
+					if (this.closest("ytd-transcript-renderer")) {
+						return;
+					}
+					// Allow normal scrolling for other elements
+					return originalScrollIntoView.apply(this, args);
+				};
+
+				// Mark as overridden to prevent multiple overrides
+				Element.prototype.scrollIntoView._youtubeSummarizerOverridden = true;
+
+				this.log("Transcript auto-scroll prevention enabled");
+			}
+		} catch (error) {
+			this.logError("Error preventing transcript auto-scroll", error);
 		}
 	}
 }
@@ -2933,5 +6015,5 @@ try {
 		window.youtubeSummarizer = new YouTubeSummarizer();
 	}
 } catch (error) {
-	console.error("Error initializing YouTube Summarizer:", error);
+	console.error("[YouTube Summarizer] Error initializing:", error);
 }

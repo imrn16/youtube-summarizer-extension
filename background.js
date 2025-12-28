@@ -186,8 +186,17 @@ class BackgroundHandler {
 	getProxyBaseUrl() {
 		return new Promise((resolve) => {
 			try {
-				chrome.storage?.sync?.get({ proxyBaseUrl: "https://youtube-summary-ashy.vercel.app" }, (items) => {
-					resolve(items.proxyBaseUrl || "https://youtube-summary-ashy.vercel.app");
+				const DEFAULT_PROXY_URL = "https://youtube-summary-ashy.vercel.app";
+				chrome.storage?.sync?.get({ proxyBaseUrl: DEFAULT_PROXY_URL }, (items) => {
+					const url = items.proxyBaseUrl || DEFAULT_PROXY_URL;
+					// Basic URL validation
+					try {
+						new URL(url);
+						resolve(url);
+					} catch {
+						// Invalid URL, use default
+						resolve(DEFAULT_PROXY_URL);
+					}
 				});
 			} catch (e) {
 				resolve("https://youtube-summary-ashy.vercel.app");
@@ -204,40 +213,78 @@ class BackgroundHandler {
 Available timestamps from the video (use these when referencing specific moments):
 ${keyTimestamps.map((ts) => `• [${ts.formatted}] - "${ts.content.trim()}"`).join("\n")}
 
-IMPORTANT: Only use the timestamps listed above when referencing specific moments in the video. Do not make up timestamps that don't correspond to real content. Each timestamp corresponds to actual subtitle content from the video.`;
+IMPORTANT TIMESTAMP SELECTION RULES:
+- Only use the timestamps listed above when referencing specific moments in the video. Do not make up timestamps that don't correspond to real content.
+- Each timestamp corresponds to actual subtitle content from the video.
+- When selecting a timestamp for a bullet point:
+  1. FIRST, try to find an exact match where the timestamp content directly relates to your bullet point
+  2. If no exact match exists, find the CLOSEST TIMESTAMP IN TIME that relates to the general time period when that content was discussed
+  3. Use temporal proximity - if content was discussed around 5:30, use timestamps near that time (e.g., 5:25, 5:28, 5:32, 5:35) even if the exact words don't match
+  4. The goal is to help users jump to the right general time period in the video, so approximate timestamps are better than no timestamp`;
 		}
 
-		return `Please provide a concise, well-structured summary of this YouTube video based on its subtitles.
+		return `Please provide a concise, well-structured summary of this YouTube video based on its subtitles. This summary must cover the ENTIRE video from start to finish with even coverage.
 
 Video Title: ${videoTitle}
 
 Subtitles:
 ${subtitles}${timestampReference}
 
-Please create a summary with the following structure:
+CRITICAL: This video may be long. You MUST ensure that:
+- The summary covers the ENTIRE video from beginning to end
+- Content is distributed EVENLY across the video timeline
+- Later parts of the video are NOT omitted or cut short
+- The summary maintains consistent detail throughout, not just at the beginning
+- If the video is long, ensure you include content from all parts, especially the middle and end sections
 
-## Main Topic
-Brief overview of what the video covers
+Please create a summary organized into logical sections that follow the order and flow of the video content. Analyze the subtitles to identify natural thematic or chronological sections, then create section headers that accurately describe each part of the video.
 
-## Key Points
-Point 1 (use timestamps from the list above when referencing specific content)
-Point 2 (use timestamps from the list above when referencing specific content)
-Point 3 (use timestamps from the list above when referencing specific content)
+CRITICAL FORMATTING REQUIREMENT:
+- START YOUR RESPONSE DIRECTLY WITH "## Overview"
+- DO NOT include any introductory text, explanations, or meta-commentary before the summary
+- DO NOT write phrases like "Here's a summary" or "Okay, here's..." or any similar introductory text
+- Begin immediately with the markdown structure: ## Overview
 
-## Important Insights
-Insight 1 (use timestamps from the list above when referencing specific content)
-Insight 2 (use timestamps from the list above when referencing specific content)
+Structure your summary as follows:
 
-## Notable Details
-Detail 1 (use timestamps from the list above when referencing specific content)
-Detail 2 (use timestamps from the list above when referencing specific content)
+## Overview
+Brief 1-2 sentence overview of what the video covers
 
-## Overall Message
-Main takeaway or conclusion
+## [Section Name 1]
+• Bullet point summarizing content from this section [MM:SS]
+• Another bullet point if there's more content to cover [MM:SS]
+• Add as many bullets as needed based on the amount of content in this section [MM:SS]
 
-IMPORTANT: Only use timestamps that are listed in the "Available timestamps" section above. Do not make up timestamps that don't correspond to real content. If you reference a specific point, use one of the provided timestamps.
+## [Section Name 2]
+• Content from this section [MM:SS]
+• More content as needed [MM:SS]
 
-Keep each section concise with 2-4 points maximum. Use **bold text** to highlight key terms, features, or important concepts. Include timestamps in the format [MM:SS] or [HH:MM:SS] when referencing specific moments, events, or important points from the video. Use clear, simple language and focus on the most important information only.`;
+[Continue with additional sections as needed based on the video's content structure]
+
+## Key Takeaways
+Main conclusions or important points from the video
+
+CRITICAL REQUIREMENTS:
+- EVERY bullet point MUST include a timestamp in [MM:SS] or [HH:MM:SS] format
+- TIMESTAMP SELECTION STRATEGY: When choosing a timestamp for a bullet point:
+  1. FIRST, try to find an exact match where the timestamp content directly relates to your bullet point
+  2. If no exact match exists, find the CLOSEST TIMESTAMP IN TIME to when that content was discussed. Use temporal proximity - if content was discussed around 5:30, use timestamps near that time (5:25, 5:28, 5:32, 5:35, etc.) even if the exact words don't match perfectly
+  3. The goal is to help users jump to the right general time period, so approximate timestamps based on time proximity are acceptable and preferred
+- Use the timestamps from the "Available timestamps" section above - match each bullet point to the most relevant timestamp based on content OR time proximity
+- If a bullet covers content from multiple timestamps or time periods, use the timestamp that best represents the main point or the earliest relevant timestamp from that time period
+- Create section headers that logically group the video's content (e.g., "Introduction", "Main Concepts", "Examples", "Conclusion", or topic-specific headers)
+- Order sections chronologically as they appear in the video
+- Include as many bullet points per section as needed to adequately summarize the content - don't limit yourself to a fixed number
+- Use **bold text** EXTENSIVELY - bold at least 2-4 key words or phrases in EVERY bullet point to improve readability and visual scanning
+- Bold important terms, concepts, numbers, statistics, names, features, actions, and key takeaways
+- Add relevant emojis to section headers to make them more visually engaging (e.g., 📝 Introduction, 💡 Key Concepts, 🎯 Main Points, ⚠️ Important Notes, ✅ Conclusion, 🔑 Key Takeaways)
+- Use emojis that match the content theme - be creative but relevant
+- Make the summary highly scannable by bolding the most important information in each bullet
+- Only use timestamps that are listed in the "Available timestamps" section above - do not make up timestamps
+- Use clear, simple language and focus on the most important information
+- The number of sections and bullets should be determined by the actual content structure, not a fixed template
+- Format important information prominently: use **bold** for statistics, key facts, main takeaways, and significant points
+- Aim for 30-50% of each bullet point to be bolded for optimal readability`;
 	}
 
 	createQueryPrompt(query, videoTitle, summary, relevantSubtitles, keyTimestamps = []) {
@@ -249,7 +296,14 @@ Keep each section concise with 2-4 points maximum. Use **bold text** to highligh
 Available timestamps from the video (use these when referencing specific moments):
 ${keyTimestamps.map((ts) => `• [${ts.formatted}] - "${ts.content.trim()}"`).join("\n")}
 
-IMPORTANT: Only use the timestamps listed above when referencing specific moments in the video. Do not make up timestamps that don't correspond to real content. Each timestamp corresponds to actual subtitle content from the video.`;
+IMPORTANT TIMESTAMP SELECTION RULES:
+- Only use the timestamps listed above when referencing specific moments in the video. Do not make up timestamps that don't correspond to real content.
+- Each timestamp corresponds to actual subtitle content from the video.
+- When selecting a timestamp for a bullet point:
+  1. FIRST, try to find an exact match where the timestamp content directly relates to your bullet point
+  2. If no exact match exists, find the CLOSEST TIMESTAMP IN TIME that relates to the general time period when that content was discussed
+  3. Use temporal proximity - if content was discussed around 5:30, use timestamps near that time (e.g., 5:25, 5:28, 5:32, 5:35) even if the exact words don't match
+  4. The goal is to help users jump to the right general time period in the video, so approximate timestamps are better than no timestamp`;
 		}
 
 		return `Please answer the following question about this YouTube video based on the provided context.
@@ -264,27 +318,59 @@ ${summary}
 	Relevant Subtitles (compact context):
 	${relevantSubtitles || ""}${timestampReference}
 
-Please provide a beautiful, well-structured answer with logical sections. Organize your response as follows:
+Please provide a beautiful, well-structured answer organized into logical sections that follow the EXACT same format as the video summary. You MUST use proper markdown formatting with ## for headers and • for bullets.
 
-## Direct Answer
-Provide the main answer to the question
+EXACT FORMAT REQUIREMENTS:
+- Section headers MUST start with ## followed by a space, then an emoji, then the section name
+- Bullet points MUST start with • followed by a space
+- Timestamps MUST be in square brackets [MM:SS] or [HH:MM:SS] at the END of each bullet point
+- Bold text MUST use **text** format (double asterisks)
 
-## Key Details
-• Include important supporting information (use timestamps from the list above when referencing specific content)
-• Add relevant context and background (use timestamps from the list above when referencing specific content)
+Structure your answer EXACTLY as follows:
 
-## Supporting Evidence
-• Reference specific points from the video (use timestamps from the list above when referencing specific content)
-• Include relevant examples or explanations (use timestamps from the list above when referencing specific content)
-• Use **bold text** to highlight key terms, features, or important concepts
+## 📝 Overview
+Brief 1-2 sentence overview of the answer
 
-## Additional Context
-• Any related information that enhances understanding (use timestamps from the list above when referencing specific content)
-• Important caveats or clarifications (use timestamps from the list above when referencing specific content)
+## 💡 [Section Name 1]
+• **Bullet point** answering the question with **key information** [MM:SS]
+• Another **bullet point** if there's **more content** to cover [MM:SS]
+• Add as many **bullets** as needed based on the **amount of content** in this section [MM:SS]
 
-Use bullet points (•) for general information and numbered bullets (1., 2., 3.) when presenting steps, sequences, or ordered lists. Use **bold text** to highlight important terms, features, or concepts. Include timestamps in the format [MM:SS] or [HH:MM:SS] when referencing specific moments, events, or important points from the video. Keep each section concise with 2-4 points maximum.
+## 🎯 [Section Name 2]
+• **Content** from this section [MM:SS]
+• More **content** as needed [MM:SS]
 
-If the question cannot be answered from the available information, clearly state "This information is not available in the video content."`;
+[Continue with additional sections as needed based on the answer's content structure, using relevant emojis like ⚠️, ✅, 🔑, 📊, 🎓]
+
+## ✅ Key Takeaways
+Main conclusions or important points from the answer
+
+CRITICAL FORMATTING RULES - FOLLOW EXACTLY:
+1. Headers: ALWAYS use ## followed by space, emoji, space, then header name. Example: ## 📝 Overview
+2. Bullets: ALWAYS use • (bullet character) followed by space, then content, then timestamp in brackets at the end. Example: • **Content here** [MM:SS]
+3. NEVER use single asterisks (*) for headers or bullets
+4. NEVER wrap headers in asterisks like * **Header** *
+5. NEVER put timestamps at the start of bullets - always at the end in brackets
+6. EVERY bullet point MUST include a timestamp in [MM:SS] or [HH:MM:SS] format at the END. This is ABSOLUTELY MANDATORY - you MUST find and include a timestamp from the "Available timestamps" section for EVERY bullet point. There is NO exception - if you cannot find a perfect match, use the closest timestamp in TIME that corresponds to when that content was discussed. NEVER write messages like "no timestamp available" or "no direct timestamp" - ALWAYS include a timestamp.
+7. TIMESTAMP SELECTION STRATEGY: When choosing a timestamp for a bullet point:
+   - FIRST priority: Find an exact match where the timestamp content directly relates to your bullet point
+   - SECOND priority: If no exact match, find the CLOSEST TIMESTAMP IN TIME to when that content was discussed. Use temporal proximity - if you're discussing content from around 5:30, use timestamps near that time (5:25, 5:28, 5:32, 5:35, etc.) even if the exact words don't match perfectly
+   - The goal is to help users jump to the right general time period, so approximate timestamps based on time proximity are acceptable and preferred over omitting timestamps
+8. If a bullet covers content from multiple timestamps or time periods, use the timestamp that best represents the main point or the earliest relevant timestamp from that time period
+9. When answering questions, EVERY bullet point MUST have a timestamp - aim for 100% timestamp coverage. Timestamps make answers much more useful by allowing users to jump directly to relevant video moments.
+10. NEVER include explanatory text about missing timestamps. NEVER write phrases like "no timestamp available", "no direct timestamp", "timestamp not found", "[N/A]", or any variation. Simply include the best matching timestamp from the available list.
+11. Create section headers that logically group your answer (e.g., "📝 Overview", "💡 Main Answer", "🎯 Supporting Details", "✅ Conclusion", or topic-specific headers), including a relevant emoji at the start of each header
+12. Order sections logically to best answer the question
+13. Include as many bullet points per section as needed to adequately answer the question - don't limit yourself to a fixed number
+14. Use **bold text** extensively to highlight key terms, important concepts, main points, features, names, numbers, and any critical information. Aim for 2-4 bolded words/phrases per bullet point, making 30-50% of the bullet bolded.
+15. Make the answer visually engaging by using **bold** for emphasis on important words and phrases throughout.
+16. Only use timestamps that are listed in the "Available timestamps" section above - do not make up timestamps
+17. Use clear, simple language and focus on the most important information
+18. The number of sections and bullets should be determined by the actual content needed to answer the question, not a fixed template
+19. Format important information prominently: use **bold** for statistics, key facts, main takeaways, and significant points
+20. If the question cannot be answered from the available information, clearly state "This information is not available in the video content."
+
+REMEMBER: Use ## for headers, • for bullets, [MM:SS] for timestamps at the END of bullets, and **text** for bold. Do NOT use single asterisks or wrap headers in asterisks.`;
 	}
 }
 
